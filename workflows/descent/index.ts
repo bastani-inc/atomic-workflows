@@ -716,7 +716,7 @@ function weightedGaps(scores: AxisScoresRecord, weights: GoalWeights): GoalWeigh
   };
 }
 
-export function approveEvaluation(evaluation: EvaluationResult): boolean {
+function approveEvaluation(evaluation: EvaluationResult): boolean {
   const { features, reliability, modularity } = evaluation.scores;
   return (
     (features >= 50 || reliability >= 50 || modularity >= 50) &&
@@ -991,7 +991,7 @@ function decreasingMaximumScores(
   return maxes.every((score, index) => index === 0 || score < maxes[index - 1]!);
 }
 
-export function shouldRecordStagnationWarning(
+function shouldRecordStagnationWarning(
   history: readonly IterationRecord[],
   historyObserve: number,
   maxReject: number,
@@ -2424,7 +2424,7 @@ function renderFinalResult(
   };
 }
 
-export async function runDescentWorkflow(
+async function runDescentWorkflow(
   ctx: WorkflowRunContext<DescentInputs>,
   options: DescentWorkflowOptions,
 ): Promise<DescentWorkflowResult> {

@@ -68,7 +68,8 @@ mock.module("@bastani/workflows", () => ({
   },
 }));
 
-const descentWorkflowPromise = import("./index.ts").then((module) => module.default);
+const descentModulePromise = import("./index.ts");
+const descentWorkflowPromise = descentModulePromise.then((module) => module.default);
 
 const EXPECTED_WORKTREE_BINDING = {
   gitWorktreeDir: "git_worktree_dir",
@@ -161,6 +162,11 @@ describe("descent helpers", () => {
       "rejected_left_for_inspection",
     );
     expect(transitionActionForDecision("error")).toBe("error_left_for_inspection");
+  });
+
+  test("workflow entrypoint exposes only the default runtime export", async () => {
+    const descentModule = await descentModulePromise;
+    expect(Object.keys(descentModule)).toEqual(["default"]);
   });
 
   test("compiled descent workflow binds Ralph-style worktree inputs", async () => {
