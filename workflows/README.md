@@ -6,6 +6,7 @@ Each workflow has its own subfolder with an `index.ts` entrypoint and local docu
 
 | Workflow | Source | Details |
 | --- | --- | --- |
+| `codebase-migration` | [`codebase-migration/index.ts`](./codebase-migration/index.ts) | [`codebase-migration/README.md`](./codebase-migration/README.md) |
 | `descent` | [`descent/index.ts`](./descent/index.ts) | [`descent/README.md`](./descent/README.md) |
 | `review-board` | [`review-board/index.ts`](./review-board/index.ts) | [`review-board/README.md`](./review-board/README.md) |
 | `security-gate` | [`security-gate/index.ts`](./security-gate/index.ts) | [`security-gate/README.md`](./security-gate/README.md) |
@@ -19,6 +20,7 @@ From an Atomic chat session:
 
 ```text
 /workflow list
+/workflow inputs codebase-migration
 /workflow inputs descent
 /workflow inputs review-board
 /workflow inputs security-gate
@@ -27,11 +29,12 @@ From an Atomic chat session:
 
 ## Final reports and artifacts
 
-Reporting workflows write their final Markdown report to disk and return compact metadata instead of returning the full report inline.
+Reporting workflows write their final Markdown report to disk and return compact metadata instead of returning the full report inline. `codebase-migration` also returns the effective shared worktree root in `worktree_dir`. In non-empty `git_worktree_dir` mode it passes that absolute root to `deep-research-codebase` only when the installed child declares and binds `git_worktree_dir` with `.worktreeFromInputs`/`inputBindings.worktree`; otherwise it fails fast before research so deep research cannot inspect a different checkout than Ralph edits. It also fails fast if the installed Ralph workflow cannot hard-disable PR/branch/comment side effects.
 
 Reporting workflows save final reports under project-root output folders:
 
 ```text
+./migrations/YYYY-MM-DD-<migration-topic>(-N).md
 ./review-board/YYYY-MM-DD-<ai-generated-topic>(-N).md
 ./security-gate/YYYY-MM-DD-<ai-generated-topic>(-N).md
 ```
