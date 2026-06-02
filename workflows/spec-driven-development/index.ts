@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 import { type TaskContext, renderTaskContexts } from "./helpers.ts";
 import { reportFilenameSummary } from "./report-output.js";
 import {
@@ -454,22 +454,46 @@ function researchFrontmatter(topic: string): string {
 
 export default defineWorkflow("spec-driven-development")
   .description("Spec Driven Development wrapper: brainstorm/direct intake → research → spec → HIL approval → separate Ralph handoff; monitor follow-on Ralph with /workflow status/connect.")
-  .input("mode", {
-    type: "select",
-    choices: ["brainstorm", "direct", "auto"],
+  .input("mode", Type.Union([
+    Type.Literal("brainstorm"),
+    Type.Literal("direct"),
+    Type.Literal("auto"),
+  ], {
     default: "auto",
     description: "brainstorm does silent triage, repo scout, focused clarification, and a compact brief; direct skips it; auto chooses based on prompt specificity.",
-  })
-  .input("prompt", {
-    type: "text",
-    required: true,
+  }))
+  .input("prompt", Type.String({
     description: "Feature idea, implementation intent, or problem statement to turn into an approved spec.",
-  })
-  .input("max_loops", {
-    type: "number",
+  }))
+  .input("max_loops", Type.Number({
     default: DEFAULT_MAX_LOOPS,
     description: "Maximum Ralph implementation loop count after spec approval. Used by the follow-on Ralph workflow; this workflow ends at handoff.",
-  })
+  }))
+  .output("status", Type.Union([
+    Type.Literal("approved-ready-for-ralph"),
+    Type.Literal("rejected"),
+    Type.Literal("stopped"),
+  ], { description: "Final spec-driven workflow status." }))
+  .output("mode", Type.Union([
+    Type.Literal("brainstorm"),
+    Type.Literal("direct"),
+    Type.Literal("auto"),
+  ], { description: "Resolved intake mode used for the workflow run." }))
+  .output("brainstorm_brief_path", Type.Optional(Type.String({ description: "Path to the brainstorm brief when brainstorm mode produced one." })))
+  .output("research_path", Type.String({ description: "Path to the saved codebase research artifact." }))
+  .output("research_artifact_dir", Type.String({ description: "Per-run artifact directory containing intermediate research artifacts." }))
+  .output("research_manifest_path", Type.String({ description: "Path to the research artifact manifest JSON." }))
+  .output("spec_path", Type.String({ description: "Path to the generated spec document." }))
+  .output("approved_spec_path", Type.Optional(Type.String({ description: "Path to the approved spec when the review gate approved it." })))
+  .output("ralph_workflow", Type.Optional(Type.String({ description: "Follow-on workflow name to launch after approval." })))
+  .output("ralph_prompt", Type.Optional(Type.String({ description: "Prompt to pass to the follow-on Ralph workflow after approval." })))
+  .output("ralph_inputs", Type.Optional(Type.Object({
+    prompt: Type.String(),
+    max_loops: Type.Number(),
+  }, { description: "Inputs to pass to the follow-on Ralph workflow after approval." })))
+  .output("ralph_command", Type.Optional(Type.String({ description: "Copyable command to launch the follow-on Ralph workflow after approval." })))
+  .output("max_loops", Type.Optional(Type.Number({ description: "Maximum Ralph implementation loop count requested for the follow-on workflow." })))
+  .output("message", Type.String({ description: "Human-readable completion or handoff message." }))
   .run(async (ctx) => {
     const initialPrompt = text(ctx.inputs.prompt);
     const requestedMode = text(ctx.inputs.mode, "auto") as "brainstorm" | "direct" | "auto";

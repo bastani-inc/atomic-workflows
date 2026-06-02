@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 import { reportSummaryText, writeWorkflowReport } from "./report-output.js";
 import {
   createWorkflowArtifactRun,
@@ -50,16 +50,19 @@ function rolePrompt(role: ReviewerRole, focus: string): string {
 
 export default defineWorkflow(WORKFLOW_NAME)
   .description("Run a full specialist review board and synthesize an evidence-backed code review without posting comments.")
-  .input("target", {
-    type: "text",
-    required: true,
+  .input("target", Type.String({
     description: "PR number/URL, branch, commit range, current diff, path, or repo.",
-  })
-  .input("focus", {
-    type: "text",
+  }))
+  .input("focus", Type.String({
     default: "",
     description: "Optional review emphasis, risk area, subsystem, or reviewer guidance.",
-  })
+  }))
+  .output("summary", Type.String({ description: "Short summary of the saved review board report." }))
+  .output("report_path", Type.String({ description: "Path to the saved final review board report." }))
+  .output("filename_summary", Type.String({ description: "Short filename-safe topic summary used for the report." }))
+  .output("artifact_dir", Type.String({ description: "Per-run artifact directory containing intermediate review artifacts." }))
+  .output("manifest_path", Type.String({ description: "Path to the workflow artifact manifest JSON." }))
+  .output("stages", Type.Array(Type.String(), { description: "Stage names completed during the review board run." }))
   .run(async (ctx) => {
     const targetInput = text(ctx.inputs.target, "repo");
     const focus = text(ctx.inputs.focus);

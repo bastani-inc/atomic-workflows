@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 import { reportSummaryText, writeWorkflowReport } from "./report-output.js";
 import {
   createWorkflowArtifactRun,
@@ -42,16 +42,25 @@ function targetGuidance(target: string): string {
 
 export default defineWorkflow(WORKFLOW_NAME)
   .description("Run a local evidence-backed security gate for a PR, branch, diff, path, or repository without applying fixes.")
-  .input("target", {
-    type: "text",
-    required: true,
+  .input("target", Type.String({
     description: "PR number/URL, branch, commit range, current diff, path, or repo.",
-  })
-  .input("focus", {
-    type: "text",
+  }))
+  .input("focus", Type.String({
     default: "",
     description: "Optional security-sensitive areas, assets, services, or assumptions.",
-  })
+  }))
+  .output("summary", Type.String({ description: "Short summary of the saved security gate report." }))
+  .output("report_path", Type.String({ description: "Path to the saved final security gate report." }))
+  .output("filename_summary", Type.String({ description: "Short filename-safe topic summary used for the report." }))
+  .output("artifact_dir", Type.String({ description: "Per-run artifact directory containing intermediate security gate artifacts." }))
+  .output("manifest_path", Type.String({ description: "Path to the workflow artifact manifest JSON." }))
+  .output("stages", Type.Array(Type.String(), { description: "Stage names completed during the security gate run." }))
+  .output("decision", Type.Union([
+    Type.Literal("pass"),
+    Type.Literal("pass-with-warnings"),
+    Type.Literal("fail"),
+    Type.Literal("inconclusive"),
+  ], { description: "Normalized final security gate decision." }))
   .run(async (ctx) => {
     const targetInput = text(ctx.inputs.target, "repo");
     const focus = text(ctx.inputs.focus);
