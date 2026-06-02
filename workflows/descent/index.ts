@@ -8,7 +8,7 @@
  * repo-local .descend/ state directory is used.
  */
 
-import { defineWorkflow } from "@bastani/workflows";
+import { defineWorkflow, Type } from "@bastani/workflows";
 import type {
   WorkflowParallelOptions,
   WorkflowRunContext,
@@ -2463,50 +2463,177 @@ async function runDescentWorkflow(
   return renderFinalResult(state, outcome);
 }
 
+const descentStatusOutputSchema = Type.Union(
+  [Type.Literal("success"), Type.Literal("failure"), Type.Literal("needs_human")],
+  { description: "Final descent workflow status." },
+);
+
+const iterationDecisionOutputSchema = Type.Union([
+  Type.Literal("approve"),
+  Type.Literal("reject"),
+  Type.Literal("error"),
+]);
+
+const evaluationPhaseOutputSchema = Type.Union([
+  Type.Literal("primary"),
+  Type.Literal("post-ultimate"),
+]);
+
+const transitionActionOutputSchema = Type.Union([
+  Type.Literal("accepted_evaluation"),
+  Type.Literal("rejected_left_for_inspection"),
+  Type.Literal("error_left_for_inspection"),
+]);
+
+const ultimateKindOutputSchema = Type.Union([
+  Type.Literal("stagnation-warning"),
+  Type.Literal("intervention"),
+  Type.Literal("reliability-campaign"),
+  Type.Literal("modularity-campaign"),
+  Type.Literal("symbolic-campaign-verification"),
+  Type.Literal("radical-plan"),
+]);
+
+const axisScoresOutputSchema = Type.Unsafe<AxisScoresRecord>(
+  Type.Object(
+    {
+      features: Type.Number(),
+      reliability: Type.Number(),
+      modularity: Type.Number(),
+    },
+    { description: "Feature, reliability, and modularity scores." },
+  ),
+);
+
+const radicalPlanOutputSchema = Type.Unsafe<RadicalPlan>(
+  Type.Object({
+    diagnosis: Type.String(),
+    previous_approach_failures: Type.Array(Type.String()),
+    new_strategy: Type.String(),
+    steps: Type.Array(
+      Type.Object({
+        file_or_area: Type.String(),
+        change: Type.String(),
+        verification: Type.String(),
+      }),
+    ),
+    what_not_to_do: Type.Array(Type.String()),
+  }),
+);
+
+const iterationRecordOutputSchema = Type.Unsafe<IterationRecord>(
+  Type.Object({
+    iteration: Type.Number(),
+    global_iteration: Type.Optional(Type.Number()),
+    evaluation_phase: evaluationPhaseOutputSchema,
+    decision: iterationDecisionOutputSchema,
+    scores: Type.Optional(axisScoresOutputSchema),
+    score: Type.Optional(Type.Number()),
+    summary: Type.String(),
+    transition: Type.Optional(transitionActionOutputSchema),
+    implementor_report: Type.Optional(Type.String()),
+    evaluator_report: Type.Optional(Type.String()),
+  }),
+);
+
+const ultimateRecordOutputSchema = Type.Unsafe<UltimateRecord>(
+  Type.Object({
+    iteration: Type.Number(),
+    kind: ultimateKindOutputSchema,
+    reason: Type.String(),
+    result: Type.Union([
+      Type.Literal("applied"),
+      Type.Literal("skipped"),
+      Type.Literal("failed"),
+    ]),
+    details: Type.Optional(Type.String()),
+  }),
+);
+
+const historyOutputSchema = Type.Unsafe<DescentWorkflowResult["history"]>(
+  Type.Array(iterationRecordOutputSchema, {
+    description: "Recorded descent iteration history.",
+  }),
+);
+
+const ultimatesOutputSchema = Type.Unsafe<DescentWorkflowResult["ultimates"]>(
+  Type.Array(ultimateRecordOutputSchema, {
+    description:
+      "Recorded intervention, campaign, symbolic gate, and radical-plan events.",
+  }),
+);
+
 export default defineWorkflow("descent")
   .description(
     "Setup → implementor → validator → terminator optimization loop with prior-failure checks and anti-drift ultimates.",
   )
-  .input("objective", {
-    type: "text",
-    required: true,
-    description:
-      "Goal, issue summary, task, or spec path for the descent optimization loop.",
-  })
-  .input("max_iterations", {
-    type: "number",
-    default: DEFAULT_MAX_ITERATIONS,
-    description:
-      "Maximum implement/validate/terminate iterations before returning needs_human.",
-  })
-  .input("max_reject", {
-    type: "number",
-    default: DEFAULT_MAX_REJECT,
-    description:
-      "Consecutive rejected/error history threshold for stagnation, campaign, and radical-plan triggers; rejected/error mutating iterations stop for inspection.",
-  })
-  .input("history_observe", {
-    type: "number",
-    default: DEFAULT_HISTORY_OBSERVE,
-    description:
-      "Recent score-history window for plateau/decreasing-score stagnation and cascading-failure detection.",
-  })
-  .input("base_branch", {
-    type: "string",
-    default: DEFAULT_DESCENT_BASE_BRANCH,
-    description:
-      "Branch/ref used to create a missing reusable worktree and as the validator comparison base.",
-  })
-  .input("git_worktree_dir", {
-    type: "string",
-    default: "",
-    description:
-      "Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values use Atomic's Ralph-style reusable worktree binding.",
-  })
+  .input(
+    "objective",
+    Type.String({
+      description:
+        "Goal, issue summary, task, or spec path for the descent optimization loop.",
+    }),
+  )
+  .input(
+    "max_iterations",
+    Type.Number({
+      default: DEFAULT_MAX_ITERATIONS,
+      description:
+        "Maximum implement/validate/terminate iterations before returning needs_human.",
+    }),
+  )
+  .input(
+    "max_reject",
+    Type.Number({
+      default: DEFAULT_MAX_REJECT,
+      description:
+        "Consecutive rejected/error history threshold for stagnation, campaign, and radical-plan triggers; rejected/error mutating iterations stop for inspection.",
+    }),
+  )
+  .input(
+    "history_observe",
+    Type.Number({
+      default: DEFAULT_HISTORY_OBSERVE,
+      description:
+        "Recent score-history window for plateau/decreasing-score stagnation and cascading-failure detection.",
+    }),
+  )
+  .input(
+    "base_branch",
+    Type.String({
+      default: DEFAULT_DESCENT_BASE_BRANCH,
+      description:
+        "Branch/ref used to create a missing reusable worktree and as the validator comparison base.",
+    }),
+  )
+  .input(
+    "git_worktree_dir",
+    Type.String({
+      default: "",
+      description:
+        "Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values use Atomic's Ralph-style reusable worktree binding.",
+    }),
+  )
   .worktreeFromInputs({
     gitWorktreeDir: "git_worktree_dir",
     baseBranch: "base_branch",
   })
+  .output("result", Type.String({ description: "Human-readable descent completion summary." }))
+  .output("status", descentStatusOutputSchema)
+  .output("converged", Type.Boolean({ description: "Whether descent converged successfully." }))
+  .output("objective", Type.String({ description: "Objective used for this descent run." }))
+  .output("iterations_completed", Type.Number({ description: "Number of primary implement/evaluate iterations completed." }))
+  .output("accepted_evaluations", Type.Number({ description: "Number of accepted evaluations across primary and post-ultimate phases." }))
+  .output("rejected_evaluations", Type.Number({ description: "Number of rejected or error evaluations across primary and post-ultimate phases." }))
+  .output("approved_iterations", Type.Number({ description: "Compatibility alias for accepted_evaluations." }))
+  .output("rejected_iterations", Type.Number({ description: "Compatibility alias for rejected_evaluations." }))
+  .output("final_score", Type.Number({ description: "Final weighted validator score." }))
+  .output("final_scores", axisScoresOutputSchema)
+  .output("history", historyOutputSchema)
+  .output("ultimates", ultimatesOutputSchema)
+  .output("review_report", Type.String({ description: "Validator report for the accepted/current evaluation, or fallback text." }))
+  .output("final_report", Type.String({ description: "Final detailed descent report." }))
+  .output("radical_plan", Type.Optional(radicalPlanOutputSchema))
   .run(async (ctx) => {
     const workflowCtx = ctx as WorkflowRunContext<DescentInputs>;
     const inputs = workflowCtx.inputs;

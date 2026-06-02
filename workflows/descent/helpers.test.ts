@@ -16,22 +16,63 @@ const descentSource = () =>
 const descentReadme = () =>
   readFileSync(new URL("./README.md", import.meta.url), "utf8");
 
-type MockInputSchema = Record<string, unknown>;
+type MockSchema = Record<string, unknown>;
 type MockWorktreeBinding = {
   readonly gitWorktreeDir: string;
   readonly baseBranch?: string;
 };
 
+type MockTypeOptions = Record<string, unknown>;
+
+function mockSchema(type: string, options: MockTypeOptions = {}): MockSchema {
+  return { type, ...options };
+}
+
+const Type = {
+  String: (options?: MockTypeOptions): MockSchema => mockSchema("string", options),
+  Number: (options?: MockTypeOptions): MockSchema => mockSchema("number", options),
+  Boolean: (options?: MockTypeOptions): MockSchema => mockSchema("boolean", options),
+  Literal: (value: string | number | boolean): MockSchema => ({ const: value }),
+  Union: (
+    variants: readonly MockSchema[],
+    options: MockTypeOptions = {},
+  ): MockSchema => ({
+    anyOf: variants,
+    ...options,
+  }),
+  Array: (items: MockSchema, options: MockTypeOptions = {}): MockSchema => ({
+    type: "array",
+    items,
+    ...options,
+  }),
+  Object: (
+    properties: Record<string, MockSchema>,
+    options: MockTypeOptions = {},
+  ): MockSchema => ({
+    type: "object",
+    properties,
+    ...options,
+  }),
+  Optional: (schema: MockSchema): MockSchema => ({ ...schema, optional: true }),
+  Unsafe<T>(schema: MockSchema): MockSchema {
+    void (undefined as T | undefined);
+    return schema;
+  },
+};
+
 mock.module("@bastani/workflows", () => ({
+  Type,
   defineWorkflow(name: string) {
     const state: {
       description: string;
-      inputs: Record<string, MockInputSchema>;
+      inputs: Record<string, MockSchema>;
+      outputs: Record<string, MockSchema>;
       inputBindings: { worktree?: MockWorktreeBinding };
       run?: unknown;
     } = {
       description: "",
       inputs: {},
+      outputs: {},
       inputBindings: {},
     };
 
@@ -40,8 +81,12 @@ mock.module("@bastani/workflows", () => ({
         state.description = text;
         return builder;
       },
-      input(key: string, schema: MockInputSchema) {
+      input(key: string, schema: MockSchema) {
         state.inputs[key] = schema;
+        return builder;
+      },
+      output(key: string, schema: MockSchema) {
+        state.outputs[key] = schema;
         return builder;
       },
       worktreeFromInputs(binding: MockWorktreeBinding) {
@@ -58,6 +103,7 @@ mock.module("@bastani/workflows", () => ({
           name,
           description: state.description,
           inputs: Object.freeze({ ...state.inputs }),
+          outputs: Object.freeze({ ...state.outputs }),
           inputBindings: Object.freeze({ ...state.inputBindings }),
           run: state.run,
         });
@@ -169,7 +215,7 @@ describe("descent helpers", () => {
     expect(Object.keys(descentModule)).toEqual(["default"]);
   });
 
-  test("compiled descent workflow binds Ralph-style worktree inputs", async () => {
+  test("compiled descent workflow binds Ralph-style worktree inputs and declares outputs", async () => {
     const descentWorkflow = await descentWorkflowPromise;
     expect(descentWorkflow.inputs.base_branch?.default).toBe(
       DEFAULT_DESCENT_BASE_BRANCH,
@@ -178,13 +224,35 @@ describe("descent helpers", () => {
     expect(descentWorkflow.inputBindings?.worktree).toEqual(
       EXPECTED_WORKTREE_BINDING,
     );
+    expect(Object.keys(descentWorkflow.outputs)).toEqual([
+      "result",
+      "status",
+      "converged",
+      "objective",
+      "iterations_completed",
+      "accepted_evaluations",
+      "rejected_evaluations",
+      "approved_iterations",
+      "rejected_iterations",
+      "final_score",
+      "final_scores",
+      "history",
+      "ultimates",
+      "review_report",
+      "final_report",
+      "radical_plan",
+    ]);
   });
 
-  test("descent workflow source uses runtime worktree binding without production setup", () => {
+  test("descent workflow source uses v0.8.22 schemas and runtime worktree binding without production setup", () => {
     const source = descentSource();
-    expect(source).toContain('.input("base_branch"');
+    expect(source).toContain('import { defineWorkflow, Type } from "@bastani/workflows";');
+    expect(source).toMatch(/\.input\(\s*"base_branch",\s*Type\.String/);
     expect(source).toContain('default: DEFAULT_DESCENT_BASE_BRANCH');
-    expect(source).toContain('.input("git_worktree_dir"');
+    expect(source).toMatch(/\.input\(\s*"git_worktree_dir",\s*Type\.String/);
+    expect(source).toContain('.output("result", Type.String');
+    expect(source).toContain('.output("radical_plan", Type.Optional');
+    expect(source).not.toContain('required: true');
     expect(source).toContain('.worktreeFromInputs({');
     expect(source).toContain('gitWorktreeDir: "git_worktree_dir"');
     expect(source).toContain('baseBranch: "base_branch"');
