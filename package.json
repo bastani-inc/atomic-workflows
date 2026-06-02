@@ -27,9 +27,13 @@
     ]
   },
   "peerDependencies": {
-    "@bastani/workflows": "*"
+    "@bastani/atomic": "0.8.22",
+    "@bastani/workflows": "0.8.22"
   },
   "peerDependenciesMeta": {
+    "@bastani/atomic": {
+      "optional": true
+    },
     "@bastani/workflows": {
       "optional": true
     }

@@ -1,0 +1,18 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "atomic-workflows",
+      "peerDependencies": {
+        "@bastani/atomic": "0.8.22",
+        "@bastani/workflows": "0.8.22",
+      },
+      "optionalPeers": [
+        "@bastani/atomic",
+        "@bastani/workflows",
+      ],
+    },
+  },
+  "packages": {}
+}
