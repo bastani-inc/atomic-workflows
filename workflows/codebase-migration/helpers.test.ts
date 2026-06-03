@@ -59,7 +59,6 @@ const mockRalph: MockWorkflowDefinition = {
     base_branch: Type.String(),
     git_worktree_dir: Type.String(),
     max_loops: Type.Number(),
-    create_pr: Type.Boolean(),
   },
   inputBindings: { worktree: { gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" } },
 };
@@ -249,6 +248,10 @@ describe("codebase-migration prompt helpers", () => {
     expect(prompt).toContain("idiomatic target-stack cleanup");
     expect(prompt).toContain("Deduplicate only when behavior remains preserved");
     expect(prompt).toContain("Run lint/type-check/focused tests");
+    expect(prompt).toContain("Use Ralph’s normal pull-request handoff behavior");
+    expect(prompt).toContain("Do not deploy or run destructive git cleanup");
+    expect(prompt).not.toContain("Do not commit, post PRs");
+    expect(prompt).not.toContain("Do not post PRs");
   });
 });
 
@@ -328,12 +331,15 @@ describe("codebase-migration workflow contract and docs", () => {
     ]);
   });
 
-  test("workflow source composes built-ins and requires research_doc_path", () => {
+  test("workflow source composes built-ins, local no-PR Ralph, and requires research_doc_path", () => {
     const source = workflowSource();
 
     expect(source).toContain('import { deepResearchCodebase, ralph } from "@bastani/workflows/builtin";');
+    expect(source).toContain('import ralphNoPr from "./ralph-no-pr.js";');
     expect(source).toContain("ctx.workflow(deepResearchCodebase");
-    expect(source).toContain("ctx.workflow(ralph");
+    expect(source).toContain("const literal = await ctx.workflow(ralphNoPr");
+    expect(source).toContain("const idiomatic = await ctx.workflow(ralph");
+    expect(source.indexOf("const literal = await ctx.workflow(ralphNoPr")).toBeLessThan(source.indexOf("const idiomatic = await ctx.workflow(ralph"));
     expect(source).toContain('stageName: "deep research migration surface"');
     expect(source).toContain('stageName: "literal translation pass"');
     expect(source).toContain('stageName: "idiomatic cleanup pass"');
@@ -361,21 +367,41 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(source).not.toMatch(/git_worktree_dir:\s*[^,\n]*ctx\.inputs\.git_worktree_dir/);
   });
 
-  test("workflow source guards Ralph PR side effects before child workflow calls", () => {
+  test("workflow source does not pass PR-disable inputs to final built-in Ralph", () => {
     const source = workflowSource();
-    const guardIndex = source.indexOf("const ralphPrDisableInputs = requireRalphPrDisableInputs(ralph);");
-    const firstRalphCallIndex = source.indexOf("ctx.workflow(ralph");
 
-    expect(guardIndex).toBeGreaterThan(-1);
-    expect(firstRalphCallIndex).toBeGreaterThan(guardIndex);
-    expect(source).toContain('inputNames.has("create_pr")');
-    expect(source).toContain("supportsCreatePr");
-    expect(source).toContain("prDisableInputs.create_pr = false");
-    expect(source).toContain('inputNames.has("pull_request_mode")');
-    expect(source).toContain("supportsPullRequestMode");
-    expect(source).toContain('prDisableInputs.pull_request_mode = "disabled"');
-    expect(source).toContain("refusing to launch Ralph passes");
-    expect(source.match(/\.\.\.ralphPrDisableInputs/g) ?? []).toHaveLength(2);
+    expect(source).not.toContain("requireRalphPrDisableInputs");
+    expect(source).not.toContain("ralphPrDisableInputs");
+    expect(source).not.toContain('inputNames.has("create_pr")');
+    expect(source).not.toContain('inputNames.has("pull_request_mode")');
+    expect(source).not.toContain("prDisableInputs");
+    expect(source).not.toContain("refusing to launch Ralph passes");
+    expect(source).not.toContain("create_pr: false");
+    expect(source).not.toContain('pull_request_mode: "disabled"');
+  });
+
+  test("local no-PR Ralph preserves worktree outputs and omits the pull-request stage", () => {
+    const source = readFileSync(new URL("./ralph-no-pr.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("Derived from Atomic's built-in Ralph workflow");
+    expect(source).toContain('defineWorkflow("ralph-no-pr")');
+    expect(source).toContain('.input("prompt"');
+    expect(source).toContain('.input("max_loops"');
+    expect(source).toContain('.input("base_branch"');
+    expect(source).toContain('.input("git_worktree_dir"');
+    expect(source).toContain('gitWorktreeDir: "git_worktree_dir"');
+    expect(source).toContain('baseBranch: "base_branch"');
+    expect(source).toContain('.output("result"');
+    expect(source).toContain('.output("plan"');
+    expect(source).toContain('.output("plan_path"');
+    expect(source).toContain('.output("implementation_notes_path"');
+    expect(source).toContain('.output("approved"');
+    expect(source).toContain('.output("iterations_completed"');
+    expect(source).toContain('.output("review_report"');
+    expect(source).toContain('.output("review_report_path"');
+    expect(source).not.toContain('ctx.task("pull-request"');
+    expect(source).not.toContain('.output("pr_report"');
+    expect(source).not.toContain("pr_report:");
   });
 
   test("deep research locality guard is a no-op in empty worktree mode", async () => {
@@ -462,10 +488,18 @@ describe("codebase-migration workflow contract and docs", () => {
       expect(researchCall.inputs.git_worktree_dir).toBe(dir);
       expect(researchCall.inputs.git_worktree_dir).not.toBe("../migration-worktree");
       expect(researchCall.inputs.base_branch).toBe("origin/release");
+      expect(literalCall.workflow.name).toBe("ralph-no-pr");
+      expect(idiomaticCall.workflow).toBe(mockRalph);
       expect(literalCall.inputs.git_worktree_dir).toBe(dir);
       expect(idiomaticCall.inputs.git_worktree_dir).toBe(dir);
-      expect(literalCall.inputs.create_pr).toBe(false);
-      expect(idiomaticCall.inputs.create_pr).toBe(false);
+      expect(literalCall.inputs.base_branch).toBe("origin/release");
+      expect(idiomaticCall.inputs.base_branch).toBe("origin/release");
+      expect(literalCall.inputs.max_loops).toBe(3);
+      expect(idiomaticCall.inputs.max_loops).toBe(4);
+      expect(literalCall.inputs).not.toHaveProperty("create_pr");
+      expect(literalCall.inputs).not.toHaveProperty("pull_request_mode");
+      expect(idiomaticCall.inputs).not.toHaveProperty("create_pr");
+      expect(idiomaticCall.inputs).not.toHaveProperty("pull_request_mode");
       expect(outputs.worktree_dir).toBe(dir);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -502,7 +536,7 @@ describe("codebase-migration workflow contract and docs", () => {
     }
   });
 
-  test("README files document registry, stages, worktree behavior, PR safety, and reports", () => {
+  test("README files document registry, stages, worktree behavior, PR ownership, and reports", () => {
     const readme = workflowReadme();
     const registry = workflowsReadme();
 
@@ -520,10 +554,14 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(readme).toContain("inputBindings.worktree");
     expect(readme).toContain("same `base_branch` for review/diff semantics");
     expect(readme).toContain("./migrations/YYYY-MM-DD-<topic>.md");
-    expect(readme).toContain("does **not** commit");
-    expect(readme).toContain("create_pr: false");
-    expect(readme).toContain('pull_request_mode: "disabled"');
-    expect(readme).toContain("fails fast");
-    expect(readme).toContain("upgrade `@bastani/workflows`");
+    expect(readme).toContain("local Ralph-derived `ralph-no-pr` workflow");
+    expect(readme).toContain("without creating an intermediate PR");
+    expect(readme).toContain("uses imported built-in Ralph without PR-control inputs");
+    expect(readme).toContain("final PR behavior is owned by built-in Ralph");
+    expect(readme).toContain("does **not** deploy");
+    expect(readme).not.toContain("create_pr: false");
+    expect(readme).not.toContain('pull_request_mode: "disabled"');
+    expect(readme).not.toContain("hard PR-disable input");
+    expect(readme).not.toContain("Current unsafe Ralph builds");
   });
 });

@@ -157,8 +157,9 @@ export function buildIdiomaticCleanupPrompt(options: IdiomaticCleanupPromptOptio
     "- Deduplicate only when behavior remains preserved and reviewability does not suffer.",
     "- Keep parity with the original migration charter and research findings; do not expand scope.",
     "- Run lint/type-check/focused tests discovered during research and any relevant target-stack validation, fixing failures when feasible.",
-    "- Record behavior parity notes, validation evidence, remaining duplicated code, known gaps, and review guidance.",
-    "- Do not commit, post PRs, deploy, or run destructive git cleanup.",
+    "- Record behavior parity notes, validation evidence, remaining gaps, and review guidance.",
+    "- Use Ralph’s normal pull-request handoff behavior when the implementation is ready.",
+    "- Do not deploy or run destructive git cleanup.",
   ].join("\n");
 }
 

@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { defineWorkflow, Type } from "@bastani/workflows";
 import { deepResearchCodebase, ralph } from "@bastani/workflows/builtin";
+import ralphNoPr from "./ralph-no-pr.js";
 import {
   DEFAULT_BASE_BRANCH,
   DEFAULT_MAX_IDIOMATIC_LOOPS,
@@ -212,29 +213,6 @@ function requireDeepResearchWorktreeInputs(options: {
   };
 }
 
-function requireRalphPrDisableInputs(workflow: unknown): Record<string, unknown> {
-  const inputNames = workflowInputNames(workflow);
-  const supportsCreatePr = inputNames.has("create_pr");
-  const supportsPullRequestMode = inputNames.has("pull_request_mode");
-
-  if (!supportsCreatePr && !supportsPullRequestMode) {
-    throw new Error(
-      "codebase-migration requires the installed Ralph workflow to declare a hard PR-disable input "
-        + "(`create_pr` or `pull_request_mode`). The current Ralph input contract exposes neither, so refusing to launch Ralph passes that may create branches, PRs, or comments. Upgrade @bastani/workflows to a Ralph build with PR-disable support.",
-    );
-  }
-
-  const prDisableInputs: Record<string, unknown> = {};
-  if (supportsCreatePr) {
-    prDisableInputs.create_pr = false;
-  }
-  if (supportsPullRequestMode) {
-    prDisableInputs.pull_request_mode = "disabled";
-  }
-
-  return prDisableInputs;
-}
-
 function reportReadPaths(
   researchOutputs: Record<string, unknown>,
   literalOutputs: RalphOutputSummary,
@@ -268,15 +246,15 @@ export default defineWorkflow(WORKFLOW_NAME)
   }))
   .input("max_research_concurrency", Type.Number({
     default: DEFAULT_MAX_RESEARCH_CONCURRENCY,
-    description: "Pass-through max_concurrency for deep-research-codebase.",
+    description: "How many research tasks can run at once. Higher can finish faster but uses more compute/API capacity.",
   }))
   .input("max_translation_loops", Type.Number({
     default: DEFAULT_MAX_TRANSLATION_LOOPS,
-    description: "Pass-through max_loops for the literal Ralph translation pass.",
+    description: "How many times Atomic may try to complete the initial code translation before stopping.",
   }))
   .input("max_idiomatic_loops", Type.Number({
     default: DEFAULT_MAX_IDIOMATIC_LOOPS,
-    description: "Pass-through max_loops for the idiomatic Ralph cleanup pass.",
+    description: "How many times Atomic may refine the translated code for cleaner, more idiomatic results.",
   }))
   .worktreeFromInputs({
     gitWorktreeDir: "git_worktree_dir",
@@ -301,7 +279,6 @@ export default defineWorkflow(WORKFLOW_NAME)
     const requestReference = await migrationRequestReference(migrationRequest, cwd);
     const baseBranch = text(ctx.inputs.base_branch, DEFAULT_BASE_BRANCH);
     const gitWorktreeDir = text(ctx.inputs.git_worktree_dir);
-    const ralphPrDisableInputs = requireRalphPrDisableInputs(ralph);
     const effectiveWorktreeDir = await resolveEffectiveWorktreeDir({
       requestedGitWorktreeDir: gitWorktreeDir,
       effectiveWorkflowCwd: cwd,
@@ -327,7 +304,7 @@ export default defineWorkflow(WORKFLOW_NAME)
       throw new Error("codebase-migration expected deep-research-codebase to return research_doc_path, but it was missing. Cannot continue to Ralph passes without the research handoff artifact.");
     }
 
-    const literal = await ctx.workflow(ralph, {
+    const literal = await ctx.workflow(ralphNoPr, {
       stageName: "literal translation pass",
       inputs: {
         prompt: buildLiteralTranslationPrompt({
@@ -336,7 +313,6 @@ export default defineWorkflow(WORKFLOW_NAME)
         }),
         base_branch: baseBranch,
         git_worktree_dir: effectiveWorktreeDir,
-        ...ralphPrDisableInputs,
         max_loops: Number(ctx.inputs.max_translation_loops ?? DEFAULT_MAX_TRANSLATION_LOOPS),
       },
     });
@@ -352,7 +328,6 @@ export default defineWorkflow(WORKFLOW_NAME)
         }),
         base_branch: baseBranch,
         git_worktree_dir: effectiveWorktreeDir,
-        ...ralphPrDisableInputs,
         max_loops: Number(ctx.inputs.max_idiomatic_loops ?? DEFAULT_MAX_IDIOMATIC_LOOPS),
       },
     });
