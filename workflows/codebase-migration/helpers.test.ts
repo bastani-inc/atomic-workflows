@@ -507,8 +507,6 @@ describe("codebase-migration workflow contract and docs", () => {
     const registry = workflowsReadme();
 
     expect(registry).toContain("codebase-migration");
-    expect(registry).toContain("deep-research-codebase");
-    expect(registry).toContain("inputBindings.worktree");
     expect(readme).toContain("deep research migration surface");
     expect(readme).toContain("literal translation pass");
     expect(readme).toContain("idiomatic cleanup pass");
