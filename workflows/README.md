@@ -29,7 +29,7 @@ From an Atomic chat session:
 
 ## Final reports and artifacts
 
-Reporting workflows write their final Markdown report to disk and return compact metadata instead of returning the full report inline. For `codebase-migration`, the final migration report is the primary artifact: it explains what migration was requested, what changed, validation evidence, remaining risks, and recommended follow-up.
+Reporting workflows write their final Markdown report to disk and return compact metadata instead of returning the full report inline.
 
 Reporting workflows save final reports under project-root output folders:
 
