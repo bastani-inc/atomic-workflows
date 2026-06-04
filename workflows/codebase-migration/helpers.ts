@@ -94,9 +94,9 @@ export function buildDeepResearchPrompt(migrationRequest: MigrationRequestRefere
     "Research deliverable requirements:",
     "- Inventory routing, APIs, data models, persistence, auth, authorization, config, build tooling, tests, deployment, and external integrations.",
     "- Map legacy/source files to likely target-stack files and note behavior-preserving translation hazards.",
-    "- Identify focused validation commands and fixtures Ralph should run during implementation.",
+    "- Identify focused validation commands and fixtures the implementation pass should run.",
     "- Separate literal-translation constraints from later idiomatic cleanup opportunities.",
-    "- Produce a durable research_doc_path artifact for downstream Ralph passes.",
+    "- Produce a durable research_doc_path artifact for downstream implementation passes.",
   ].join("\n");
 }
 
@@ -117,7 +117,7 @@ export function buildLiteralTranslationPrompt(options: LiteralTranslationPromptO
     "- Do not perform broad idiomatic refactors, deduplication, architectural reshaping, dependency swaps, or unrelated cleanup yet.",
     "- Keep large research/report handoffs path-based; cite artifact paths rather than pasting full reports.",
     "- Run focused validation discovered during research and record exact commands, failures, skipped checks, and rationale.",
-    "- Use Ralph’s normal pull-request handoff behavior when the literal translation is ready.",
+    "- Prepare the normal pull-request handoff when the literal translation is ready.",
     "- Do not deploy or run destructive git cleanup.",
   ].join("\n");
 }
@@ -137,7 +137,7 @@ export function formatRalphArtifacts(outputs: RalphOutputSummary): string {
     optionalOutputLine("iterations_completed", outputs.iterations_completed),
   ].filter((line): line is string => Boolean(line));
 
-  return lines.length > 0 ? lines.join("\n") : "- No structured Ralph artifact paths were returned; inspect the literal pass result/output in the parent run.";
+  return lines.length > 0 ? lines.join("\n") : "- No structured implementation artifact paths were returned; inspect the pass result/output in the parent run.";
 }
 
 export function buildIdiomaticCleanupPrompt(options: IdiomaticCleanupPromptOptions): string {
@@ -160,7 +160,7 @@ export function buildIdiomaticCleanupPrompt(options: IdiomaticCleanupPromptOptio
     "- Keep parity with the original migration charter and research findings; do not expand scope.",
     "- Run lint/type-check/focused tests discovered during research and any relevant target-stack validation, fixing failures when feasible.",
     "- Record behavior parity notes, validation evidence, remaining gaps, and review guidance.",
-    "- Use Ralph’s normal pull-request handoff behavior when the implementation is ready.",
+    "- Prepare the normal pull-request handoff when the implementation is ready.",
     "- Do not deploy or run destructive git cleanup.",
   ].join("\n");
 }

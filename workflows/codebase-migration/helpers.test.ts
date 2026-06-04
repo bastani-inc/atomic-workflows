@@ -206,7 +206,10 @@ describe("codebase-migration prompt helpers", () => {
     expect(prompt).toContain("Migrate Rails to Phoenix");
     expect(prompt).toContain("routing, APIs, data models");
     expect(prompt).toContain("literal-translation constraints");
+    expect(prompt).toContain("the implementation pass should run");
+    expect(prompt).toContain("downstream implementation passes");
     expect(prompt).toContain("research_doc_path");
+    expect(prompt).not.toContain("Ralph");
   });
 
   test("request formatting handles path references without inlining the spec", () => {
@@ -218,7 +221,7 @@ describe("codebase-migration prompt helpers", () => {
     expect(request.promptBlock).not.toContain("```text");
   });
 
-  test("literal prompt references research path, original request, 1:1 mapping, behavior, duplication, and Ralph PR handoff", () => {
+  test("literal prompt references research path, original request, 1:1 mapping, behavior, duplication, and PR handoff", () => {
     const prompt = buildLiteralTranslationPrompt({
       migrationRequest: formatMigrationRequestReference("Migrate AngularJS to React", "inline"),
       researchDocPath: "research/migration.md",
@@ -230,8 +233,9 @@ describe("codebase-migration prompt helpers", () => {
     expect(prompt).toContain("Preserve existing behavior");
     expect(prompt).toContain("keep duplicated code");
     expect(prompt).toContain("Do not perform broad idiomatic refactors");
-    expect(prompt).toContain("Use Ralph’s normal pull-request handoff behavior");
+    expect(prompt).toContain("Prepare the normal pull-request handoff");
     expect(prompt).toContain("Do not deploy or run destructive git cleanup");
+    expect(prompt).not.toContain("Ralph");
     expect(prompt).not.toContain("Do not commit, post PRs");
     expect(prompt).not.toContain("Do not post PRs");
   });
@@ -241,19 +245,20 @@ describe("codebase-migration prompt helpers", () => {
       migrationRequest: formatMigrationRequestReference("Migrate Flask to FastAPI", "inline"),
       researchDocPath: "research/flask-fastapi.md",
       literalOutputs: {
-        plan_path: "ralph/literal-plan.md",
-        implementation_notes_path: "ralph/literal-notes.md",
-        review_report_path: "ralph/literal-review.md",
+        plan_path: "implementation/literal-plan.md",
+        implementation_notes_path: "implementation/literal-notes.md",
+        review_report_path: "implementation/literal-review.md",
       },
     });
 
     expect(prompt).toContain("research/flask-fastapi.md");
-    expect(prompt).toContain("ralph/literal-plan.md");
+    expect(prompt).toContain("implementation/literal-plan.md");
     expect(prompt).toContain("idiomatic target-stack cleanup");
     expect(prompt).toContain("Deduplicate only when behavior remains preserved");
     expect(prompt).toContain("Run lint/type-check/focused tests");
-    expect(prompt).toContain("Use Ralph’s normal pull-request handoff behavior");
+    expect(prompt).toContain("Prepare the normal pull-request handoff");
     expect(prompt).toContain("Do not deploy or run destructive git cleanup");
+    expect(prompt).not.toContain("Ralph");
     expect(prompt).not.toContain("Do not commit, post PRs");
     expect(prompt).not.toContain("Do not post PRs");
   });
