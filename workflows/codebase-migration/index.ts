@@ -4,7 +4,6 @@ import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { defineWorkflow, Type } from "@bastani/workflows";
 import { deepResearchCodebase, ralph } from "@bastani/workflows/builtin";
-import ralphNoPr from "./ralph-no-pr.js";
 import {
   DEFAULT_BASE_BRANCH,
   DEFAULT_MAX_IDIOMATIC_LOOPS,
@@ -304,7 +303,7 @@ export default defineWorkflow(WORKFLOW_NAME)
       throw new Error("codebase-migration expected deep-research-codebase to return research_doc_path, but it was missing. Cannot continue to Ralph passes without the research handoff artifact.");
     }
 
-    const literal = await ctx.workflow(ralphNoPr, {
+    const literal = await ctx.workflow(ralph, {
       stageName: "literal translation pass",
       inputs: {
         prompt: buildLiteralTranslationPrompt({

@@ -117,7 +117,8 @@ export function buildLiteralTranslationPrompt(options: LiteralTranslationPromptO
     "- Do not perform broad idiomatic refactors, deduplication, architectural reshaping, dependency swaps, or unrelated cleanup yet.",
     "- Keep large research/report handoffs path-based; cite artifact paths rather than pasting full reports.",
     "- Run focused validation discovered during research and record exact commands, failures, skipped checks, and rationale.",
-    "- Do not commit, post PRs, deploy, or run destructive git cleanup.",
+    "- Use Ralph’s normal pull-request handoff behavior when the literal translation is ready.",
+    "- Do not deploy or run destructive git cleanup.",
   ].join("\n");
 }
 
@@ -131,6 +132,7 @@ export function formatRalphArtifacts(outputs: RalphOutputSummary): string {
     optionalOutputLine("plan_path", outputs.plan_path),
     optionalOutputLine("implementation_notes_path", outputs.implementation_notes_path),
     optionalOutputLine("review_report_path", outputs.review_report_path),
+    optionalOutputLine("pr_report", outputs.pr_report),
     optionalOutputLine("approved", outputs.approved),
     optionalOutputLine("iterations_completed", outputs.iterations_completed),
   ].filter((line): line is string => Boolean(line));

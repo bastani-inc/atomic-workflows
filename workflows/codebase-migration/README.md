@@ -1,10 +1,10 @@
 # codebase-migration
 
-`codebase-migration` coordinates a large legacy-to-target-stack migration in one Atomic workflow run. It composes built-in workflows for research and the final implementation handoff, plus a local Ralph-derived no-PR workflow for the intermediate literal pass:
+`codebase-migration` coordinates a large legacy-to-target-stack migration in one Atomic workflow run. It composes built-in workflows for research plus two imported built-in Ralph implementation passes:
 
 1. Built-in `deep-research-codebase` inventories the migration surface.
-2. Local `ralph-no-pr` performs a literal behavior-preserving translation pass without preparing an intermediate PR.
-3. Built-in `ralph` runs for idiomatic target-stack cleanup, validation, safe deduplication, and normal Ralph PR/handoff behavior.
+2. Built-in `ralph` performs a literal behavior-preserving translation pass and uses Ralph's normal PR/handoff behavior for the literal translation PR.
+3. Built-in `ralph` runs for idiomatic target-stack cleanup, validation, safe deduplication, and normal Ralph PR/handoff behavior for the idiomatic cleanup PR.
 4. The parent workflow writes a final Markdown handoff report under `migrations/`.
 
 ## Usage
@@ -46,8 +46,8 @@ Recommended reusable worktree for broad migrations, when the installed `deep-res
 | Stage | Purpose |
 | --- | --- |
 | `deep research migration surface` | Runs `deep-research-codebase` with the starter migration research prompt plus the user's migration charter. The returned `research_doc_path` is required. |
-| `literal translation pass` | Runs the local Ralph-derived `ralph-no-pr` workflow against the research artifact and original charter. It preserves Ralph's planning/orchestration/simplification/review loop but omits the final pull-request stage, so the literal pass can preserve behavior, map files 1:1 where practical, and intentionally keep duplicated/mechanical code without creating an intermediate PR. |
-| `idiomatic cleanup pass` | Runs imported built-in Ralph in the same checkout/worktree. The prompt asks for target-stack idioms, validation, and safe deduplication only after the literal pass exists, then allows Ralph's normal PR/handoff behavior when ready. |
+| `literal translation pass` | Runs imported built-in Ralph against the research artifact and original charter. The prompt asks Ralph to preserve behavior, map files 1:1 where practical, intentionally keep duplicated/mechanical code, and use normal PR/handoff behavior when the literal translation is ready. |
+| `idiomatic cleanup pass` | Runs imported built-in Ralph in the same checkout/worktree. The prompt asks for target-stack idioms, validation, and safe deduplication only after the literal pass exists, then uses Ralph's normal PR/handoff behavior when ready. |
 | `migration handoff report` | Writes a final developer-facing Markdown report using artifact paths from research and both Ralph passes. |
 
 ## Outputs
@@ -59,8 +59,8 @@ Recommended reusable worktree for broad migrations, when the installed `deep-res
 | `research_doc_path` | Deep research report path used as the implementation handoff. |
 | `research_artifact_dir` | Optional deep-research artifact directory. |
 | `research_manifest_path` | Optional deep-research manifest path. |
-| `literal_translation` | Selected outputs from the local no-PR literal Ralph pass, such as plan/notes/review paths. `pr_report` is intentionally absent because this pass skips PR preparation. |
-| `idiomatic_cleanup` | Selected outputs from the imported built-in Ralph pass, including `pr_report` when built-in Ralph returns it. |
+| `literal_translation` | Selected outputs from the first imported built-in Ralph pass, such as plan/notes/review paths and `pr_report` when built-in Ralph returns it. |
+| `idiomatic_cleanup` | Selected outputs from the second imported built-in Ralph pass, including `pr_report` when built-in Ralph returns it. |
 | `approved` | Final Ralph approval value when returned. |
 | `worktree_dir` | Effective shared worktree root used by deep research and both Ralph passes in reusable-worktree mode, or empty when the invoking checkout was used. |
 
@@ -81,7 +81,7 @@ This mirrors the Descent/Ralph reusable-worktree convention:
 - Both implementation child passes receive the same effective absolute worktree root and the same `base_branch` for review/diff semantics, so the idiomatic cleanup starts from the literal pass changes in the same effective workspace.
 - `worktree_dir` returns the shared effective value: `""` for invoking-checkout mode or the derived absolute worktree root for reusable-worktree mode.
 
-The parent workflow does **not** deploy, run `git reset --hard`, run `git clean -ffdx`, or perform destructive cleanup. The first literal pass uses the local Ralph-derived `ralph-no-pr` workflow so it can plan, orchestrate, simplify, and review without creating an intermediate PR. The second idiomatic cleanup pass uses imported built-in Ralph without PR-control inputs; final PR behavior is owned by built-in Ralph and follows Ralph's normal policy when the implementation is ready and credentials/repository state allow it. Review the report, Ralph artifacts, repository diff, and validation evidence before deploying.
+The parent workflow does **not** deploy, run `git reset --hard`, run `git clean -ffdx`, or perform destructive cleanup. Both implementation passes use imported built-in Ralph without PR-control inputs; both PR handoffs are owned by built-in Ralph and follow Ralph's normal policy when each implementation pass is ready and credentials/repository state allow it. The expected handoff is two PRs: one literal translation PR followed by one idiomatic cleanup PR. Review the report, Ralph artifacts, repository diff, and validation evidence before deploying.
 
 ## Report behavior
 

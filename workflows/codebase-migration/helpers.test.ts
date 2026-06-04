@@ -218,7 +218,7 @@ describe("codebase-migration prompt helpers", () => {
     expect(request.promptBlock).not.toContain("```text");
   });
 
-  test("literal prompt references research path, original request, 1:1 mapping, behavior, and duplication constraints", () => {
+  test("literal prompt references research path, original request, 1:1 mapping, behavior, duplication, and Ralph PR handoff", () => {
     const prompt = buildLiteralTranslationPrompt({
       migrationRequest: formatMigrationRequestReference("Migrate AngularJS to React", "inline"),
       researchDocPath: "research/migration.md",
@@ -230,6 +230,10 @@ describe("codebase-migration prompt helpers", () => {
     expect(prompt).toContain("Preserve existing behavior");
     expect(prompt).toContain("keep duplicated code");
     expect(prompt).toContain("Do not perform broad idiomatic refactors");
+    expect(prompt).toContain("Use Ralph’s normal pull-request handoff behavior");
+    expect(prompt).toContain("Do not deploy or run destructive git cleanup");
+    expect(prompt).not.toContain("Do not commit, post PRs");
+    expect(prompt).not.toContain("Do not post PRs");
   });
 
   test("idiomatic prompt references research and literal artifacts plus safe deduplication and validation", () => {
@@ -331,15 +335,15 @@ describe("codebase-migration workflow contract and docs", () => {
     ]);
   });
 
-  test("workflow source composes built-ins, local no-PR Ralph, and requires research_doc_path", () => {
+  test("workflow source composes built-in deep research plus two built-in Ralph passes and requires research_doc_path", () => {
     const source = workflowSource();
 
     expect(source).toContain('import { deepResearchCodebase, ralph } from "@bastani/workflows/builtin";');
-    expect(source).toContain('import ralphNoPr from "./ralph-no-pr.js";');
+    expect(source).not.toContain('import ralphNoPr from "./ralph-no-pr.js";');
     expect(source).toContain("ctx.workflow(deepResearchCodebase");
-    expect(source).toContain("const literal = await ctx.workflow(ralphNoPr");
+    expect(source).toContain("const literal = await ctx.workflow(ralph");
     expect(source).toContain("const idiomatic = await ctx.workflow(ralph");
-    expect(source.indexOf("const literal = await ctx.workflow(ralphNoPr")).toBeLessThan(source.indexOf("const idiomatic = await ctx.workflow(ralph"));
+    expect(source.indexOf("const literal = await ctx.workflow(ralph")).toBeLessThan(source.indexOf("const idiomatic = await ctx.workflow(ralph"));
     expect(source).toContain('stageName: "deep research migration surface"');
     expect(source).toContain('stageName: "literal translation pass"');
     expect(source).toContain('stageName: "idiomatic cleanup pass"');
@@ -350,6 +354,7 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(source).toContain('worktreeBinding?.gitWorktreeDir === "git_worktree_dir"');
     expect(source).toContain("deepResearchWorktreeInputs");
     expect(source.indexOf("const deepResearchWorktreeInputs = requireDeepResearchWorktreeInputs")).toBeLessThan(source.indexOf("ctx.workflow(deepResearchCodebase"));
+    expect(source).not.toContain("ralphNoPr");
     expect(source).not.toContain("setupGitWorktree");
   });
 
@@ -367,7 +372,7 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(source).not.toMatch(/git_worktree_dir:\s*[^,\n]*ctx\.inputs\.git_worktree_dir/);
   });
 
-  test("workflow source does not pass PR-disable inputs to final built-in Ralph", () => {
+  test("workflow source does not pass PR-disable inputs to either built-in Ralph pass", () => {
     const source = workflowSource();
 
     expect(source).not.toContain("requireRalphPrDisableInputs");
@@ -380,28 +385,13 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(source).not.toContain('pull_request_mode: "disabled"');
   });
 
-  test("local no-PR Ralph preserves worktree outputs and omits the pull-request stage", () => {
-    const source = readFileSync(new URL("./ralph-no-pr.ts", import.meta.url), "utf8");
+  test("workflow source uses imported built-in Ralph for both implementation passes", () => {
+    const source = workflowSource();
 
-    expect(source).toContain("Derived from Atomic's built-in Ralph workflow");
-    expect(source).toContain('defineWorkflow("ralph-no-pr")');
-    expect(source).toContain('.input("prompt"');
-    expect(source).toContain('.input("max_loops"');
-    expect(source).toContain('.input("base_branch"');
-    expect(source).toContain('.input("git_worktree_dir"');
-    expect(source).toContain('gitWorktreeDir: "git_worktree_dir"');
-    expect(source).toContain('baseBranch: "base_branch"');
-    expect(source).toContain('.output("result"');
-    expect(source).toContain('.output("plan"');
-    expect(source).toContain('.output("plan_path"');
-    expect(source).toContain('.output("implementation_notes_path"');
-    expect(source).toContain('.output("approved"');
-    expect(source).toContain('.output("iterations_completed"');
-    expect(source).toContain('.output("review_report"');
-    expect(source).toContain('.output("review_report_path"');
-    expect(source).not.toContain('ctx.task("pull-request"');
-    expect(source).not.toContain('.output("pr_report"');
-    expect(source).not.toContain("pr_report:");
+    expect(source).toContain("const literal = await ctx.workflow(ralph");
+    expect(source).toContain("const idiomatic = await ctx.workflow(ralph");
+    expect(source.match(/ctx\.workflow\(ralph/g) ?? []).toHaveLength(2);
+    expect(source).not.toContain("ralph-no-pr");
   });
 
   test("deep research locality guard is a no-op in empty worktree mode", async () => {
@@ -488,7 +478,7 @@ describe("codebase-migration workflow contract and docs", () => {
       expect(researchCall.inputs.git_worktree_dir).toBe(dir);
       expect(researchCall.inputs.git_worktree_dir).not.toBe("../migration-worktree");
       expect(researchCall.inputs.base_branch).toBe("origin/release");
-      expect(literalCall.workflow.name).toBe("ralph-no-pr");
+      expect(literalCall.workflow).toBe(mockRalph);
       expect(idiomaticCall.workflow).toBe(mockRalph);
       expect(literalCall.inputs.git_worktree_dir).toBe(dir);
       expect(idiomaticCall.inputs.git_worktree_dir).toBe(dir);
@@ -554,10 +544,11 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(readme).toContain("inputBindings.worktree");
     expect(readme).toContain("same `base_branch` for review/diff semantics");
     expect(readme).toContain("./migrations/YYYY-MM-DD-<topic>.md");
-    expect(readme).toContain("local Ralph-derived `ralph-no-pr` workflow");
-    expect(readme).toContain("without creating an intermediate PR");
-    expect(readme).toContain("uses imported built-in Ralph without PR-control inputs");
-    expect(readme).toContain("final PR behavior is owned by built-in Ralph");
+    expect(readme).toContain("two imported built-in Ralph implementation passes");
+    expect(readme).toContain("literal translation PR");
+    expect(readme).toContain("idiomatic cleanup PR");
+    expect(readme).toContain("without PR-control inputs");
+    expect(readme).toContain("both PR handoffs are owned by built-in Ralph");
     expect(readme).toContain("does **not** deploy");
     expect(readme).not.toContain("create_pr: false");
     expect(readme).not.toContain('pull_request_mode: "disabled"');
