@@ -8,6 +8,7 @@ import {
   DEFAULT_BASE_BRANCH,
   DEFAULT_MAX_IDIOMATIC_LOOPS,
   DEFAULT_MAX_RESEARCH_CONCURRENCY,
+  DEFAULT_MAX_RESEARCH_PARTITIONS,
   DEFAULT_MAX_TRANSLATION_LOOPS,
   buildDeepResearchPrompt,
   buildIdiomaticCleanupPrompt,
@@ -92,10 +93,14 @@ async function migrationRequestReference(
   return formatMigrationRequestReference(migrationRequest, path ? "path" : "inline");
 }
 
+async function git(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd });
+  return text(stdout);
+}
+
 async function resolveGitTopLevel(cwd: string): Promise<string> {
   try {
-    const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd });
-    const gitRoot = text(stdout);
+    const gitRoot = await git(["rev-parse", "--show-toplevel"], cwd);
     if (gitRoot.length === 0) {
       throw new Error("git returned an empty top-level path");
     }
@@ -125,6 +130,74 @@ type WorkflowWorktreeBinding = {
   readonly gitWorktreeDir: string;
   readonly baseBranch?: string;
 };
+
+type MigrationReportCommit = {
+  readonly branch: string;
+  readonly commit: string;
+  readonly pushedTo: string;
+};
+
+function hasExitCode(error: unknown, code: number): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === code;
+}
+
+async function hasStagedMigrationChanges(cwd: string): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["diff", "--cached", "--quiet", "--", "migrations"], { cwd });
+    return false;
+  } catch (error) {
+    if (hasExitCode(error, 1)) {
+      return true;
+    }
+
+    throw error;
+  }
+}
+
+async function currentBranchUpstream(cwd: string): Promise<string | undefined> {
+  try {
+    const upstream = await git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd);
+    return upstream.length > 0 ? upstream : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function pushCurrentBranch(cwd: string, branch: string): Promise<string> {
+  const upstream = await currentBranchUpstream(cwd);
+  if (upstream !== undefined) {
+    const [remote, ...remoteBranchParts] = upstream.split("/");
+    const remoteBranch = remoteBranchParts.join("/");
+    if (remote.length > 0 && remoteBranch.length > 0) {
+      await git(["push", remote, `HEAD:${remoteBranch}`], cwd);
+      return upstream;
+    }
+  }
+
+  await git(["push", "--set-upstream", "origin", branch], cwd);
+  return `origin/${branch}`;
+}
+
+async function commitAndPushMigrationReport(cwd: string): Promise<MigrationReportCommit> {
+  await git(["add", "--", "migrations"], cwd);
+  if (!(await hasStagedMigrationChanges(cwd))) {
+    throw new Error("codebase-migration wrote the final migration report, but no staged migrations/ changes were found to commit.");
+  }
+
+  const branch = await git(["branch", "--show-current"], cwd);
+  if (branch.length === 0) {
+    throw new Error("codebase-migration cannot push the final migration report because the workflow is not on a named branch.");
+  }
+
+  await git(["commit", "-m", "docs: add final migration handoff", "--", "migrations"], cwd);
+  const commit = await git(["rev-parse", "--short", "HEAD"], cwd);
+  const pushedTo = await pushCurrentBranch(cwd, branch);
+
+  return { branch, commit, pushedTo };
+}
 
 function workflowInputNames(workflow: unknown): Set<string> {
   if (typeof workflow !== "object" || workflow === null) {
@@ -247,6 +320,10 @@ export default defineWorkflow(WORKFLOW_NAME)
     default: DEFAULT_MAX_RESEARCH_CONCURRENCY,
     description: "How many research tasks can run at once. Higher can finish faster but uses more compute/API capacity.",
   }))
+  .input("max_research_partitions", Type.Number({
+    default: DEFAULT_MAX_RESEARCH_PARTITIONS,
+    description: "Maximum codebase partitions explored by the deep research phase.",
+  }))
   .input("max_translation_loops", Type.Number({
     default: DEFAULT_MAX_TRANSLATION_LOOPS,
     description: "How many times Atomic may try to complete the initial code translation before stopping.",
@@ -294,6 +371,7 @@ export default defineWorkflow(WORKFLOW_NAME)
       inputs: {
         prompt: buildDeepResearchPrompt(requestReference),
         max_concurrency: Number(ctx.inputs.max_research_concurrency ?? DEFAULT_MAX_RESEARCH_CONCURRENCY),
+        max_partitions: Number(ctx.inputs.max_research_partitions ?? DEFAULT_MAX_RESEARCH_PARTITIONS),
         ...deepResearchWorktreeInputs,
       },
     });
@@ -350,13 +428,15 @@ export default defineWorkflow(WORKFLOW_NAME)
       summary: reportTitleSeed(requestReference),
       report: text((reportDraft as { text?: unknown }).text, text(reportDraft)),
     });
+    const reportCommit = await commitAndPushMigrationReport(cwd);
 
     const approved = typeof idiomaticOutputs.approved === "boolean" ? idiomaticOutputs.approved : undefined;
     const result = [
       `Codebase migration orchestration complete. Final report: ${savedReport.reportPath}`,
+      `Final migration report committed to ${reportCommit.branch} at ${reportCommit.commit} and pushed to ${reportCommit.pushedTo}.`,
       `Research artifact: ${researchDocPath}`,
       approved === undefined ? "Final Ralph approval: unavailable" : `Final Ralph approval: ${approved ? "approved" : "not approved"}`,
-      "Review the report, Ralph artifacts, repository diff, and validation evidence before committing or deploying.",
+      "Review the report, Ralph artifacts, repository diff, and validation evidence before deploying.",
     ].join("\n");
 
     const workflowOutputs: Record<string, unknown> = {

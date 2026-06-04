@@ -7,6 +7,7 @@ import {
   DEFAULT_BASE_BRANCH,
   DEFAULT_MAX_IDIOMATIC_LOOPS,
   DEFAULT_MAX_RESEARCH_CONCURRENCY,
+  DEFAULT_MAX_RESEARCH_PARTITIONS,
   DEFAULT_MAX_TRANSLATION_LOOPS,
   buildDeepResearchPrompt,
   buildIdiomaticCleanupPrompt,
@@ -153,6 +154,10 @@ type WorkflowCall = {
 function makeGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "codebase-migration-git-"));
   execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Codebase Migration Test"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "codebase-migration@example.test"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["init", "--bare", ".remote.git"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["remote", "add", "origin", ".remote.git"], { cwd: dir, stdio: "ignore" });
   return realpathSync(dir);
 }
 
@@ -171,6 +176,7 @@ async function runWorkflowWithCalls(options: {
       base_branch: options.baseBranch ?? DEFAULT_BASE_BRANCH,
       git_worktree_dir: options.gitWorktreeDir,
       max_research_concurrency: 7,
+      max_research_partitions: 11,
       max_translation_loops: 3,
       max_idiomatic_loops: 4,
     },
@@ -321,6 +327,7 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(workflow.inputs.base_branch?.default).toBe(DEFAULT_BASE_BRANCH);
     expect(workflow.inputs.git_worktree_dir?.default).toBe("");
     expect(workflow.inputs.max_research_concurrency?.default).toBe(DEFAULT_MAX_RESEARCH_CONCURRENCY);
+    expect(workflow.inputs.max_research_partitions?.default).toBe(DEFAULT_MAX_RESEARCH_PARTITIONS);
     expect(workflow.inputs.max_translation_loops?.default).toBe(DEFAULT_MAX_TRANSLATION_LOOPS);
     expect(workflow.inputs.max_idiomatic_loops?.default).toBe(DEFAULT_MAX_IDIOMATIC_LOOPS);
     expect(workflow.inputBindings?.worktree).toEqual({
@@ -367,7 +374,7 @@ describe("codebase-migration workflow contract and docs", () => {
     const source = workflowSource();
 
     expect(source).toContain("resolveEffectiveWorktreeDir");
-    expect(source).toContain('execFileAsync("git", ["rev-parse", "--show-toplevel"]');
+    expect(source).toContain('git(["rev-parse", "--show-toplevel"], cwd)');
     expect(source).toContain("requestedGitWorktreeDir: gitWorktreeDir");
     expect(source).toContain("effectiveWorkflowCwd: cwd");
     expect(source.match(/git_worktree_dir:\s*effectiveWorktreeDir/g) ?? []).toHaveLength(2);
@@ -375,6 +382,32 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(source).toContain('return "";');
     expect(source).not.toContain("git_worktree_dir: gitWorktreeDir");
     expect(source).not.toMatch(/git_worktree_dir:\s*[^,\n]*ctx\.inputs\.git_worktree_dir/);
+  });
+
+  test("workflow commits and pushes the final migrations report to the current branch", async () => {
+    setMockDeepResearchContract({
+      inputs: {
+        prompt: Type.String(),
+        max_concurrency: Type.Number(),
+      },
+    });
+    const dir = makeGitRepo();
+    try {
+      const { outputs } = await runWorkflowWithCalls({ cwd: dir, gitWorktreeDir: "" });
+      const reportPath = outputs.migration_report_path as string;
+      const committedReport = execFileSync("git", ["show", `HEAD:${reportPath.replace(`${dir}/`, "")}`], { cwd: dir, encoding: "utf8" });
+      const currentBranch = execFileSync("git", ["branch", "--show-current"], { cwd: dir, encoding: "utf8" }).trim();
+      const remoteHead = execFileSync("git", ["rev-parse", `origin/${currentBranch}`], { cwd: dir, encoding: "utf8" }).trim();
+      const localHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+
+      expect(reportPath).toContain("/migrations/");
+      expect(committedReport).toBe("# Migration handoff\n\nValidation passed.\n");
+      expect(remoteHead).toBe(localHead);
+      expect(outputs.result).toContain("Final migration report committed to");
+      expect(outputs.result).toContain("pushed to origin");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("workflow source does not pass PR-disable inputs to either built-in Ralph pass", () => {
@@ -406,15 +439,16 @@ describe("codebase-migration workflow contract and docs", () => {
         max_concurrency: Type.Number(),
       },
     });
-    const dir = mkdtempSync(join(tmpdir(), "codebase-migration-empty-"));
+    const dir = makeGitRepo();
     try {
       const { outputs, calls } = await runWorkflowWithCalls({ cwd: dir, gitWorktreeDir: "" });
       const researchCall = calls[0];
 
       expect(researchCall.workflow).toBe(mockDeepResearchCodebase);
       expect(researchCall.stageName).toBe("deep research migration surface");
-      expect(Object.keys(researchCall.inputs).sort()).toEqual(["max_concurrency", "prompt"]);
+      expect(Object.keys(researchCall.inputs).sort()).toEqual(["max_concurrency", "max_partitions", "prompt"]);
       expect(researchCall.inputs.max_concurrency).toBe(7);
+      expect(researchCall.inputs.max_partitions).toBe(11);
       expect(outputs.worktree_dir).toBe("");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -441,6 +475,7 @@ describe("codebase-migration workflow contract and docs", () => {
           base_branch: DEFAULT_BASE_BRANCH,
           git_worktree_dir: "../migration-worktree",
           max_research_concurrency: 7,
+          max_research_partitions: 11,
           max_translation_loops: 3,
           max_idiomatic_loops: 4,
         },
@@ -483,6 +518,7 @@ describe("codebase-migration workflow contract and docs", () => {
       expect(researchCall.inputs.git_worktree_dir).toBe(dir);
       expect(researchCall.inputs.git_worktree_dir).not.toBe("../migration-worktree");
       expect(researchCall.inputs.base_branch).toBe("origin/release");
+      expect(researchCall.inputs.max_partitions).toBe(11);
       expect(literalCall.workflow).toBe(mockRalph);
       expect(idiomaticCall.workflow).toBe(mockRalph);
       expect(literalCall.inputs.git_worktree_dir).toBe(dir);
@@ -520,6 +556,7 @@ describe("codebase-migration workflow contract and docs", () => {
           base_branch: DEFAULT_BASE_BRANCH,
           git_worktree_dir: "../migration-worktree",
           max_research_concurrency: 7,
+          max_research_partitions: 11,
           max_translation_loops: 3,
           max_idiomatic_loops: 4,
         },
@@ -540,6 +577,10 @@ describe("codebase-migration workflow contract and docs", () => {
     expect(readme).toContain("literal translation pass");
     expect(readme).toContain("idiomatic cleanup pass");
     expect(readme).toContain("migration handoff report");
+    expect(readme).toContain("final report commit");
+    expect(readme).toContain("stages `migrations/`");
+    expect(readme).toContain("pushes that branch to its configured upstream");
+    expect(readme).toContain("falling back to `origin`");
     expect(readme).toContain(".worktreeFromInputs");
     expect(readme).toContain("Empty `git_worktree_dir`");
     expect(readme).toContain("parent worktree binding owns `git_worktree_dir`");

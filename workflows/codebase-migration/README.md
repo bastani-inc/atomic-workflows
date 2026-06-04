@@ -6,6 +6,7 @@
 2. Built-in `ralph` performs a literal behavior-preserving translation pass and uses Ralph's normal PR/handoff behavior for the literal translation PR.
 3. Built-in `ralph` runs for idiomatic target-stack cleanup, validation, safe deduplication, and normal Ralph PR/handoff behavior for the idiomatic cleanup PR.
 4. The parent workflow writes a final Markdown handoff report under `migrations/`.
+5. The parent workflow commits `migrations/` and pushes the commit to the final/current PR branch.
 
 ## Usage
 
@@ -38,6 +39,7 @@ Recommended reusable worktree for broad migrations, when the installed `deep-res
 | `base_branch` | `origin/main` | Branch/ref used by Ralph review comparison and reusable worktree creation. |
 | `git_worktree_dir` | `""` | Optional reusable Git worktree path. Empty runs in the invoking checkout. Non-empty values activate Atomic/Ralph-style reusable worktree binding. |
 | `max_research_concurrency` | `100` | How many research tasks can run at once. Higher can finish faster but uses more compute/API capacity. |
+| `max_research_partitions` | `100` | Maximum codebase partitions explored by the deep research phase. Lower this to cap breadth/cost for manual testing. |
 | `max_translation_loops` | `10` | How many times Atomic may try to complete the initial code translation before stopping. |
 | `max_idiomatic_loops` | `10` | How many times Atomic may refine the translated code for cleaner, more idiomatic results. |
 
@@ -45,10 +47,11 @@ Recommended reusable worktree for broad migrations, when the installed `deep-res
 
 | Stage | Purpose |
 | --- | --- |
-| `deep research migration surface` | Runs `deep-research-codebase` with the starter migration research prompt plus the user's migration charter. The returned `research_doc_path` is required. |
+| `deep research migration surface` | Runs `deep-research-codebase` with the starter migration research prompt plus the user's migration charter, `max_research_concurrency`, and `max_research_partitions`. The returned `research_doc_path` is required. |
 | `literal translation pass` | Runs imported built-in Ralph against the research artifact and original charter. The prompt asks Ralph to preserve behavior, map files 1:1 where practical, intentionally keep duplicated/mechanical code, and use normal PR/handoff behavior when the literal translation is ready. |
 | `idiomatic cleanup pass` | Runs imported built-in Ralph in the same checkout/worktree. The prompt asks for target-stack idioms, validation, and safe deduplication only after the literal pass exists, then uses Ralph's normal PR/handoff behavior when ready. |
 | `migration handoff report` | Writes a final developer-facing Markdown report using artifact paths from research and both Ralph passes. |
+| `final report commit` | Stages `migrations/`, commits the final migration report, and pushes the commit to the current final PR branch. |
 
 ## Outputs
 
@@ -74,14 +77,14 @@ The workflow uses:
 
 This mirrors the Descent/Ralph reusable-worktree convention:
 
-- Empty `git_worktree_dir` means the workflow operates in the invoking checkout. The deep research child receives only its normal `prompt` and `max_concurrency` inputs, and Ralph receives `git_worktree_dir: ""` in this mode.
+- Empty `git_worktree_dir` means the workflow operates in the invoking checkout. The deep research child receives only its normal `prompt`, `max_concurrency`, and `max_partitions` inputs, and Ralph receives `git_worktree_dir: ""` in this mode.
 - A non-empty `git_worktree_dir` lets the Atomic runtime bind the parent run to a reusable worktree based on `base_branch` and preserve the invoking repo-relative subdirectory.
 - The parent worktree binding owns `git_worktree_dir`. The parent never forwards the raw relative parent value to nested child workflows. Instead, it runs `git rev-parse --show-toplevel` from the parent effective `cwd` and passes that effective absolute worktree root to every child workflow that can bind it.
 - In reusable-worktree mode, `deep-research-codebase` must declare `git_worktree_dir` and bind it through `.worktreeFromInputs`/`inputBindings.worktree`. When supported, the parent passes the effective absolute worktree root to deep research so its agents inspect the same checkout/worktree Ralph will edit; `base_branch` is passed only if the installed child declares it.
 - Both implementation child passes receive the same effective absolute worktree root and the same `base_branch` for review/diff semantics, so the idiomatic cleanup starts from the literal pass changes in the same effective workspace.
 - `worktree_dir` returns the shared effective value: `""` for invoking-checkout mode or the derived absolute worktree root for reusable-worktree mode.
 
-The parent workflow does **not** deploy, run `git reset --hard`, run `git clean -ffdx`, or perform destructive cleanup. Both implementation passes use imported built-in Ralph without PR-control inputs; both PR handoffs are owned by built-in Ralph and follow Ralph's normal policy when each implementation pass is ready and credentials/repository state allow it. The expected handoff is two PRs: one literal translation PR followed by one idiomatic cleanup PR. Review the report, Ralph artifacts, repository diff, and validation evidence before deploying.
+The parent workflow does **not** deploy, run `git reset --hard`, run `git clean -ffdx`, or perform destructive cleanup. Both implementation passes use imported built-in Ralph without PR-control inputs; both PR handoffs are owned by built-in Ralph and follow Ralph's normal policy when each implementation pass is ready and credentials/repository state allow it. The expected handoff is two PRs: one literal translation PR followed by one idiomatic cleanup PR. After the final report is written, the parent stages `migrations/`, creates a `docs: add final migration handoff` commit on the current final PR branch, and pushes that branch to its configured upstream, falling back to `origin` when no upstream exists. Review the report, Ralph artifacts, repository diff, and validation evidence before deploying.
 
 ## Report behavior
 
