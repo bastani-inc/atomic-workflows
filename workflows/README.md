@@ -7,6 +7,7 @@ Each workflow has its own subfolder with an `index.ts` entrypoint and local docu
 | Workflow | Source | Details |
 | --- | --- | --- |
 | `codebase-migration` | [`codebase-migration/index.ts`](./codebase-migration/index.ts) | [`codebase-migration/README.md`](./codebase-migration/README.md) |
+| `compound-engineering` | [`compound-engineering/index.ts`](./compound-engineering/index.ts) | [`compound-engineering/README.md`](./compound-engineering/README.md) — safe default handoff-only; explicit `goal`/`ralph` run after approval; file-backed review gates and optional post-validation learning. |
 | `descent` | [`descent/index.ts`](./descent/index.ts) | [`descent/README.md`](./descent/README.md) |
 | `review-board` | [`review-board/index.ts`](./review-board/index.ts) | [`review-board/README.md`](./review-board/README.md) |
 | `security-gate` | [`security-gate/index.ts`](./security-gate/index.ts) | [`security-gate/README.md`](./security-gate/README.md) |
@@ -21,6 +22,7 @@ From an Atomic chat session:
 ```text
 /workflow list
 /workflow inputs codebase-migration
+/workflow inputs compound-engineering
 /workflow inputs descent
 /workflow inputs review-board
 /workflow inputs security-gate
@@ -31,15 +33,16 @@ From an Atomic chat session:
 
 Reporting workflows write their final Markdown report to disk and return compact metadata instead of returning the full report inline.
 
-Reporting workflows save final reports under project-root output folders:
+Reporting workflows save final reports under project-root output folders. Compound Engineering visible Markdown artifacts are collision-safe and use `-2`, `-3`, ... suffixes when a same-day slug already exists:
 
 ```text
+./compound-engineering/YYYY-MM-DD-<topic>.md
 ./migrations/YYYY-MM-DD-<migration-topic>(-N).md
 ./review-board/YYYY-MM-DD-<ai-generated-topic>(-N).md
 ./security-gate/YYYY-MM-DD-<ai-generated-topic>(-N).md
 ```
 
-Intermediate workflow outputs are preserved under hidden run-specific artifact directories such as `./.review-board-<run-id>/` and `./.security-gate-<run-id>/`. Each artifact directory includes markdown stage outputs created by that run and a `manifest.json` recording the run id, timestamps, user input, final report path, and actual artifact paths. Some workflows may intentionally create a smaller artifact set when they short-circuit.
+Intermediate workflow outputs are preserved under hidden run-specific artifact directories such as `./.compound-engineering-<run-id>/`, `./.review-board-<run-id>/`, and `./.security-gate-<run-id>/`. Each artifact directory includes markdown stage outputs created by that run and a `manifest.json` recording the run id, timestamps, user input, final report path, and actual artifact paths. Some workflows may intentionally create a smaller artifact set when they short-circuit.
 
 The return object includes `summary`, `report_path`, `filename_summary`, `artifact_dir`, `manifest_path`, and `stages`.
 

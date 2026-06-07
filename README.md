@@ -99,6 +99,15 @@ Use workflow paths relative to the package root, such as `workflows/review-board
 
 These workflows are provided by this registry package after installation. See [`workflows/README.md`](./workflows/README.md) for the current workflow index, details, and settings filter examples.
 
+| Workflow | Use |
+| --- | --- |
+| `codebase-migration` | Research and execute bounded migration passes with Ralph handoffs. |
+| `compound-engineering` | Safe Compound Engineering-inspired brainstorm/plan/approval/review/learning loop; defaults to handoff-only but explicit `goal`/`ralph` runners execute after approval, with file-backed review evidence and optional post-validation learning. |
+| `descent` | Bounded iterative code optimization with validation loops. |
+| `review-board` | Read-only specialist review board and synthesized report. |
+| `security-gate` | Read-only security risk gate for a PR, branch, diff, path, or repo. |
+| `spec-driven-development` | Brainstorm/direct intake through approved spec and Ralph handoff metadata. |
+
 ## Customize these workflow recipes
 
 These workflows are deliberately readable TypeScript recipes, not black boxes. Copy one into your project or your own workflow package and adapt the inputs, prompts, stages, parallel specialists, validation policy, and output format.
