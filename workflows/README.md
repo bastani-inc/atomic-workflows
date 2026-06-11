@@ -8,6 +8,7 @@ Each workflow has its own subfolder with an `index.ts` entrypoint and local docu
 | --- | --- | --- |
 | `codebase-migration` | [`codebase-migration/index.ts`](./codebase-migration/index.ts) | [`codebase-migration/README.md`](./codebase-migration/README.md) |
 | `descent` | [`descent/index.ts`](./descent/index.ts) | [`descent/README.md`](./descent/README.md) |
+| `dex-rich-man-loop` | [`dex-rich-man-loop/index.ts`](./dex-rich-man-loop/index.ts) | [`dex-rich-man-loop/README.md`](./dex-rich-man-loop/README.md) |
 | `review-board` | [`review-board/index.ts`](./review-board/index.ts) | [`review-board/README.md`](./review-board/README.md) |
 | `security-gate` | [`security-gate/index.ts`](./security-gate/index.ts) | [`security-gate/README.md`](./security-gate/README.md) |
 | `spec-driven-development` | [`spec-driven-development/index.ts`](./spec-driven-development/index.ts) | [`spec-driven-development/README.md`](./spec-driven-development/README.md) |
@@ -22,6 +23,7 @@ From an Atomic chat session:
 /workflow list
 /workflow inputs codebase-migration
 /workflow inputs descent
+/workflow inputs dex-rich-man-loop
 /workflow inputs review-board
 /workflow inputs security-gate
 /workflow inputs spec-driven-development
