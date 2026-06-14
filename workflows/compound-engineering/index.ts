@@ -1,7 +1,17 @@
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineWorkflow, Type } from "@bastani/workflows";
 import { goal, ralph } from "@bastani/workflows/builtin";
+import {
+  SEVERITY_LEVELS,
+  emptySeverityCounts,
+  gateChildRunCompletion,
+  isRecord,
+  loadChildReviewArtifact,
+  optionalNonEmptyString,
+  parseEvidenceFromText,
+  type ChildReviewArtifact,
+  type SeverityLevel,
+} from "./lib/review-evidence.js";
 import {
   buildChildHandoff,
   createArtifactRun,
@@ -44,26 +54,36 @@ const DEFAULT_BASE_BRANCH = "origin/main";
 const FILE_ONLY_OUTPUT = "file-only" as const;
 const EVERY_INC_CREDIT = "Inspired by EveryInc's MIT-licensed Compound Engineering Plugin process vocabulary: brainstorm → plan → work → review → compound learning.";
 
-const CHILD_OUTPUT_KEYS = [
+const GOAL_CHILD_OUTPUT_KEYS = [
   "result",
   "status",
-  "message",
-  "summary",
   "approved",
-  "artifact_dir",
-  "manifest_path",
+  "goal_id",
+  "objective",
+  "ledger_path",
+  "turns_completed",
+  "iterations_completed",
+  "receipts",
+  "remaining_work",
+  "review_report",
+  "review_report_path",
+] as const;
+
+const RALPH_CHILD_OUTPUT_KEYS = [
+  "result",
+  "plan",
   "plan_path",
   "implementation_notes_path",
-  "ledger_path",
   "pr_report",
+  "approved",
   "iterations_completed",
   "review_report",
   "review_report_path",
-  "validation_output",
-  "changed_files",
-  "compound_engineering_evidence",
 ] as const;
-const CHILD_OUTPUT_KEY_SET = new Set<string>(CHILD_OUTPUT_KEYS);
+
+function declaredChildOutputKeys(runner: Exclude<ResolvedImplementationRunner, "handoff-only">): readonly string[] {
+  return runner === "goal" ? GOAL_CHILD_OUTPUT_KEYS : RALPH_CHILD_OUTPUT_KEYS;
+}
 
 const resolvedModeSchema = Type.Union([
   Type.Literal("brainstorm"),
@@ -98,219 +118,7 @@ function manifestArtifacts(paths: ReadonlyMap<string, string>, manifestPath: str
   return artifacts;
 }
 
-type SufficiencyCriterion = ReviewCriterion;
-type SeverityLevel = keyof Required<SeverityCounts>;
 
-const SEVERITY_LEVELS: readonly SeverityLevel[] = ["p0", "p1", "p2", "p3"];
-
-type CriterionPolicy = {
-  positive: readonly RegExp[];
-  negative: readonly RegExp[];
-};
-
-const VALIDATION_NO_RUN_PATTERN = /\b(?:validation\s+commands?|tests?|test\s+commands?|commands?)\s+(?:run|ran)\s*:?\s*(?:none|no\s+commands?|zero|0|n\/a)\b|\bno\s+validation\s+(?:(?:was|were)\s+)?(?:run|ran|performed)\b|\bno\s+validation\s+commands?\s+(?:(?:was|were)\s+)?run\b|\bno\s+tests?\s+(?:(?:was|were)\s+)?run\b|\bno\s+commands?\s+(?:(?:was|were)\s+)?run\b|\bvalidation\s+(?:commands?\s+)?skipped\b|\bvalidation\b.{0,50}\bskipped\b|\bvalidation\s+not\s+(?:run|performed|backed|available)\b|\bvalidation\b.{0,50}\b(?:was|were)\s+not\s+(?:run|performed|available)\b|\btests?\b.{0,40}\bskipped\b|\btests?\s+(?:were\s+)?not\s+run\b/;
-const CONTEXTUAL_VALIDATION_ERROR_PATTERN = /\b(?:reported\s+)?[1-9]\d*\s+errors\b|\berror\s+count\s*:?\s*[1-9]\d*\b|\berrors\s*:?\s*[1-9]\d*\b|\bfailed\s+with\s+errors\b/;
-const VALIDATION_NEGATED_SUCCESS_PATTERN = /\b(?:not|never)\s+(?:(?:all|any|every)\s+(?:[\w-]+\s+){0,6})?(?:pass(?:ed|es|ing)?|successful|success|succeed(?:ed|s|ing)?)\b|\bunsuccessful\b/;
-const VALIDATION_SUCCESS_PATTERN = /\b(?:passed|passes|passing|succeeded|successful|success|status\s*:?\s*0|code\s*:?\s*0|exit\s+(?:code|status)\s*:?\s*0|exited\s+with\s+(?:exit\s+)?(?:code|status)\s*:?\s*0|returned\s+(?:exit\s+)?(?:code|status)\s*:?\s*0)\b/;
-
-const REVIEW_EVIDENCE_POLICIES = {
-  independent: {
-    positive: [/\bindependent(?:ly)?\b/, /\bseparate reviewer\b/, /\bfresh[-\s]context reviewer\b/],
-    negative: [
-      /\bnot\s+independent\b/,
-      /\bno\s+(?:independent|separate|fresh[-\s]context)\s+review(?:er)?\b/,
-      /\bwithout\s+(?:an?\s+)?(?:independent|separate|fresh[-\s]context)\s+review(?:er)?\b/,
-      /\bself[-\s]review\b/,
-    ],
-  },
-  acceptance_mapped: {
-    positive: [
-      /\b(?:map(?:ped)?|mapping|check(?:ed)?|verify|verified|trace(?:d)?|cover(?:ed)?|coverage)\b.{0,80}\b(?:acceptance(?:\s+criteria)?|approved\s+(?:plan|spec))\b/,
-      /\b(?:acceptance(?:\s+criteria)?|approved\s+(?:plan|spec))\b.{0,80}\b(?:map(?:ped)?|mapping|check(?:ed)?|verify|verified|trace(?:d)?|cover(?:ed)?|coverage)\b/,
-    ],
-    negative: [
-      /\bno\s+acceptance(?:\s+criteria)?\s+(?:mapping|mapped|traceability|coverage)\b/,
-      /\bno\s+acceptance(?:\s+criteria)?\s+(?:(?:was|were)\s+)?(?:mapped|checked|verified|traced|covered|inspected)\b/,
-      /\bnot\s+acceptance[-\s]mapped\b/,
-      /\bacceptance\s+(?:mapping\s+)?(?:not\s+)?(?:missing|skipped|absent)\b/,
-      /\b(?:acceptance(?:\s+criteria|\s+mapping)?|approved\s+(?:plan|spec)|spec)\b.{0,80}\b(?:not\s+(?:mapped|provided|performed|done|checked|verified|traced|covered|inspected)|(?:was|were)\s+not\s+(?:mapped|provided|performed|done|checked|verified|traced|covered|inspected)|unmapped|unchecked|unverified|untraced|uncovered|skipped|missing|absent|unavailable)\b/,
-      /\b(?:did not|does not|not)\s+(?:map|mapped|check|checked|verify|verified|trace|traced|cover|covered|inspect|inspected)\b.{0,80}\b(?:acceptance|approved\s+(?:plan|spec)|spec)\b/,
-      /\b(?:unchecked|unmapped|unverified|untraced|uncovered)\s+(?:acceptance(?:\s+criteria)?|approved\s+)?(?:spec|plan|criteria)\b/,
-    ],
-  },
-  diff_aware: {
-    positive: [/\bdiff\b/, /\bchanged files?\b/, /\bgit status\b/, /\bgit diff\b/],
-    negative: [
-      /\bdiff\s+(?:was\s+|were\s+)?not\s+(?:inspected|reviewed|checked)\b/,
-      /\bnot\s+(?:inspect(?:ed)?|review(?:ed)?|check(?:ed)?)\b.{0,40}\bdiff\b/,
-      /\b(?:did not|does not)\s+(?:inspect|review|check)\b.{0,40}\bdiff\b/,
-      /\bdiff(?:\s+review)?\b.{0,40}\b(?:skipped|missing|absent|not\s+(?:inspected|reviewed|checked|performed)|(?:was|were)\s+not\s+(?:inspected|reviewed|checked|performed))\b/,
-      /\b(?:unable|could not|cannot)\s+(?:to\s+)?(?:inspect|review|check)\b.{0,60}\b(?:current\s+)?(?:git\s+)?diff\b/,
-      /\bcould not\s+inspect\s+changed files?\b/,
-      /\bdiff\s+(?:was\s+)?unavailable\b/,
-      /\bdiff\s+(?:could\s+not|cannot)\s+be\s+(?:inspected|reviewed|checked)\b/,
-      /\bdiff\s+was\s+not\s+available\b/,
-      /\bno\s+(?:git\s+)?diff\s+(?:was\s+)?available\b/,
-      /\bchanged files?\s+(?:was\s+|were\s+)?(?:unavailable|not\s+(?:inspected|reviewed|checked|available))\b/,
-      /\bno\s+(?:git\s+)?diff\b.{0,80}\b(?:inspected|reviewed|checked)\b/,
-      /\bno\s+changed files?\b.{0,80}\b(?:inspected|reviewed|checked)\b/,
-    ],
-  },
-  validation_backed: {
-    positive: [
-      /\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test|npm\s+test|pnpm\s+test|yarn\s+test|test\s+command)\b.{0,80}\b(?:passed|passes|passing|succeeded|successful|success|status\s*:?\s*0|code\s*:?\s*0|exit\s+(?:code|status)\s*:?\s*0|exited\s+with\s+(?:exit\s+)?(?:code|status)\s*:?\s*0|returned\s+(?:exit\s+)?(?:code|status)\s*:?\s*0)\b/,
-      /\b(?:passed|passes|passing|succeeded|successful|success|status\s*:?\s*0|code\s*:?\s*0|exit\s+(?:code|status)\s*:?\s*0|exited\s+with\s+(?:exit\s+)?(?:code|status)\s*:?\s*0|returned\s+(?:exit\s+)?(?:code|status)\s*:?\s*0)\b.{0,80}\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test|npm\s+test|pnpm\s+test|yarn\s+test|test\s+command)\b/,
-    ],
-    negative: [
-      VALIDATION_NO_RUN_PATTERN,
-      /\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test)\b.{0,80}\b(?:failed|failures?|failing|errored|did\s+not\s+pass|does\s+not\s+pass|not\s+passing|non[-\s]?zero|(?:exit\s+)?(?:code|status)\s*:?\s*[1-9]\d*)\b/,
-      /\b(?:failed|failures?|failing|errored|did\s+not\s+pass|does\s+not\s+pass|not\s+passing|non[-\s]?zero|(?:exit\s+)?(?:code|status)\s*:?\s*[1-9]\d*)\b.{0,80}\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test)\b/,
-      /\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test)\b.{0,80}\b(?:reported\s+)?[1-9]\d*\s+errors\b/,
-      /\b(?:reported\s+)?[1-9]\d*\s+errors\b.{0,80}\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test)\b/,
-      /\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test)\b.{0,80}\b(?:error\s+count\s*:?\s*[1-9]\d*|errors\s*:?\s*[1-9]\d*|failed\s+with\s+errors)\b/,
-      /\b(?:error\s+count\s*:?\s*[1-9]\d*|errors\s*:?\s*[1-9]\d*|failed\s+with\s+errors)\b.{0,80}\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test)\b/,
-    ],
-  },
-  risk_aware: {
-    positive: [/\brisk\b/, /\bresidual\b/, /\bsecurity\b/],
-    negative: [
-      /\bno\s+residual\s+risk\s+(?:assessment|review|analysis)\b/,
-      /\bno\s+risk\s+(?:assessment|review|analysis)\b/,
-      /\brisk\s+(?:assessment|review|analysis)\s+(?:not\s+)?(?:missing|skipped|absent)\b/,
-      /\brisk\b.{0,50}\bunknown\b/,
-      /\brisk\b.{0,50}\b(?:not\s+(?:assessed|reviewed|evaluated)|(?:was|were)\s+not\s+(?:assessed|reviewed|evaluated|performed))\b/,
-      /\bnot\s+(?:risk|residual\s+risk)[-\s]aware\b/,
-    ],
-  },
-  fresh: {
-    positive: [
-      /\b(?:review(?:ed)?|fresh|evidence)\b.{0,60}\bafter\s+(?:the\s+)?(?:final\s+diff|latest\s+change|current\s+diff)\b/,
-      /\bafter\s+(?:the\s+)?(?:final\s+diff|latest\s+change|current\s+diff)\b.{0,60}\b(?:review(?:ed)?|fresh|evidence)\b/,
-    ],
-    negative: [
-      /\bnot\s+fresh\b/,
-      /\bstale\b/,
-      /\b(?:review(?:ed)?|evidence)\b.{0,60}\b(?:predates|before)\b.{0,40}\b(?:final\s+diff|latest\s+change|current\s+diff)\b/,
-      /\b(?:predates|before)\s+(?:the\s+)?(?:final\s+diff|latest\s+change|current\s+diff)\b/,
-      /\bnot\s+(?:after\s+)?(?:the\s+)?latest\s+change\b/,
-      /\bcurrent diff\b.{0,60}\bnot\s+(?:inspected|reviewed|checked)\b/,
-    ],
-  },
-} as const satisfies Record<SufficiencyCriterion, CriterionPolicy>;
-
-function reviewSegments(value: string): string[] {
-  return value
-    .toLowerCase()
-    .split(/[\r\n.;]+/)
-    .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0);
-}
-
-function matchesAnyPattern(value: string, patterns: readonly RegExp[]): boolean {
-  return patterns.some((pattern) => pattern.test(value));
-}
-
-function criterionEvidenceState(segments: readonly string[], policy: CriterionPolicy): boolean | undefined {
-  if (segments.some((segment) => matchesAnyPattern(segment, policy.negative))) return false;
-  if (segments.some((segment) => matchesAnyPattern(segment, policy.positive))) return true;
-  return undefined;
-}
-
-const VALIDATION_SUBJECT_PATTERN = /\b(?:validation|tests?|commands?|bun\s+test|cargo\s+test|npm\s+test|pnpm\s+test|yarn\s+test|test\s+command)\b/;
-const VALIDATION_RUN_CONTEXT_PATTERN = /\b(?:run|ran|completed|bun\s+test|cargo\s+test|npm\s+test|pnpm\s+test|yarn\s+test|test\s+command)\b/;
-const NO_VALIDATION_FAILURE_PATTERN = /\b(?:no|zero|0)\s+(?:validation\s+)?(?:commands?\s+)?(?:failed|failures?|errors?)\b|\b(?:validation\s+)?(?:failures?|errors?)\s*:\s*(?:none|no|zero|0)\b|\b(?:no|zero|0)\s+tests?\s+(?:failed|failing)\b|\bwithout\s+(?:validation\s+|test\s+)?(?:failures?|errors?)\b/g;
-const VALIDATION_FAILURE_PATTERN = /\b(?:failed|failures?|failing|errored|did\s+not\s+pass|does\s+not\s+pass|not\s+passing|non[-\s]?zero|(?:exit\s+)?(?:code|status)\s*:?\s*[1-9]\d*|exited\s+with\s+(?:exit\s+)?(?:code|status)\s*:?\s*[1-9]\d*|returned\s+(?:exit\s+)?(?:code|status)\s*:?\s*[1-9]\d*)\b|\b(?:reported\s+)?[1-9]\d*\s+errors\b|\berror\s+count\s*:?\s*[1-9]\d*\b|\berrors\s*:?\s*[1-9]\d*\b|\bfailed\s+with\s+errors\b/;
-
-function removeNoValidationFailureAssertions(segment: string): string {
-  return segment.replace(NO_VALIDATION_FAILURE_PATTERN, " ").trim();
-}
-
-function hasValidationRunContext(segment: string): boolean {
-  return VALIDATION_SUBJECT_PATTERN.test(segment) && VALIDATION_RUN_CONTEXT_PATTERN.test(segment) && !VALIDATION_NO_RUN_PATTERN.test(segment);
-}
-
-function validationConditionHasContext(segment: string, previousSegment: string): boolean {
-  return VALIDATION_SUBJECT_PATTERN.test(segment) || (previousSegment.length > 0 && hasValidationRunContext(previousSegment));
-}
-
-function hasValidationFailure(segments: readonly string[]): boolean {
-  for (let index = 0; index < segments.length; index += 1) {
-    const scrubbed = removeNoValidationFailureAssertions(segments[index]);
-    if (scrubbed.length === 0) continue;
-
-    const hasFailure = VALIDATION_FAILURE_PATTERN.test(scrubbed) || CONTEXTUAL_VALIDATION_ERROR_PATTERN.test(scrubbed);
-    const hasNegatedSuccess = VALIDATION_NEGATED_SUCCESS_PATTERN.test(scrubbed);
-    if (!hasFailure && !hasNegatedSuccess) continue;
-
-    const previous = index > 0 ? removeNoValidationFailureAssertions(segments[index - 1]) : "";
-    if (validationConditionHasContext(scrubbed, previous)) return true;
-  }
-  return false;
-}
-
-function validationEvidenceState(segments: readonly string[]): boolean | undefined {
-  const scrubbedSegments = segments
-    .map(removeNoValidationFailureAssertions)
-    .filter((segment) => segment.length > 0);
-  const validationPolicy = REVIEW_EVIDENCE_POLICIES.validation_backed;
-
-  for (let index = 0; index < scrubbedSegments.length; index += 1) {
-    const segment = scrubbedSegments[index];
-    if (!VALIDATION_NEGATED_SUCCESS_PATTERN.test(segment)) continue;
-
-    const previous = index > 0 ? scrubbedSegments[index - 1] : "";
-    if (validationConditionHasContext(segment, previous)) return false;
-  }
-
-  if (scrubbedSegments.some((segment) => matchesAnyPattern(segment, validationPolicy.negative))) return false;
-  if (scrubbedSegments.some((segment) => matchesAnyPattern(segment, validationPolicy.positive))) return true;
-
-  for (let index = 1; index < scrubbedSegments.length; index += 1) {
-    if (VALIDATION_SUCCESS_PATTERN.test(scrubbedSegments[index]) && hasValidationRunContext(scrubbedSegments[index - 1])) return true;
-  }
-  return undefined;
-}
-
-function emptySeverityCounts(): Required<SeverityCounts> {
-  return { p0: 0, p1: 0, p2: 0, p3: 0 };
-}
-
-function severityFindingLines(value: string, severity: SeverityLevel): number {
-  const findingPattern = new RegExp(`(?:^|\\s)(?:-\\s*)?(?:\\[${severity}\\]|${severity}\\s*(?::\\s*\\S|[-–—]\\s*\\S))`, "i");
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => {
-      if (line.length === 0) return false;
-      if (/^#{1,6}\s*(?:p[0-3])\b/i.test(line)) return false;
-      if (/^(?:-\s*)?(?:p[0-3]\s*:\s*)?(?:none(?:\s+(?:found|identified|reported))?|no\s+(?:findings?|issues?|blockers?)|n\/a|nothing)\.?$/i.test(line)) return false;
-      return findingPattern.test(line);
-    })
-    .length;
-}
-
-export function parseEvidenceFromText(value: string): ReviewEvidence {
-  const textValue = value.toLowerCase();
-  const segments = reviewSegments(value);
-  const validationFailed = hasValidationFailure(segments);
-  const severity_counts = emptySeverityCounts();
-  for (const severity of SEVERITY_LEVELS) {
-    severity_counts[severity] = severityFindingLines(value, severity);
-  }
-
-  return {
-    independent: criterionEvidenceState(segments, REVIEW_EVIDENCE_POLICIES.independent),
-    acceptance_mapped: criterionEvidenceState(segments, REVIEW_EVIDENCE_POLICIES.acceptance_mapped),
-    diff_aware: criterionEvidenceState(segments, REVIEW_EVIDENCE_POLICIES.diff_aware),
-    validation_backed: validationFailed ? false : validationEvidenceState(segments),
-    risk_aware: criterionEvidenceState(segments, REVIEW_EVIDENCE_POLICIES.risk_aware),
-    fresh: criterionEvidenceState(segments, REVIEW_EVIDENCE_POLICIES.fresh),
-    severity_counts,
-    conflicted: /conflict(ed|ing)? evidence/.test(textValue),
-    validation_failed: validationFailed,
-    blocked: /blocked|unable to review|missing dependency/.test(textValue),
-  };
-}
 
 function childOutputs(result: unknown): Record<string, unknown> {
   if (typeof result !== "object" || result === null) return {};
@@ -354,19 +162,69 @@ function textFromUnknown(value: unknown): string {
   }
 }
 
-function normalizedChildOutput(result: unknown): Record<string, unknown> {
+function normalizedChildOutput(result: unknown, runner: Exclude<ResolvedImplementationRunner, "handoff-only">): Record<string, unknown> {
   const outputs = childOutputs(result);
+  const declaredKeys = declaredChildOutputKeys(runner);
+  const declaredKeySet = new Set<string>(declaredKeys);
   const selected: Record<string, unknown> = {};
-  for (const key of CHILD_OUTPUT_KEYS) {
+  for (const key of declaredKeys) {
     if (outputs[key] !== undefined) selected[key] = outputs[key];
   }
 
-  const omittedChildOutputKeys = Object.keys(outputs)
-    .filter((key) => !CHILD_OUTPUT_KEY_SET.has(key))
+  const unknownChildOutputKeys = Object.keys(outputs)
+    .filter((key) => !declaredKeySet.has(key))
     .sort();
-  if (omittedChildOutputKeys.length > 0) selected.omitted_child_output_keys = omittedChildOutputKeys;
+  if (unknownChildOutputKeys.length > 0) selected.unknown_child_output_keys = unknownChildOutputKeys;
 
   return outputRecord(selected);
+}
+
+function childWorkflowExited(result: unknown): boolean {
+  return typeof result === "object" && result !== null && (result as { exited?: unknown }).exited === true;
+}
+
+type ChildAtomicExitStatus = "blocked" | "cancelled" | "skipped";
+
+function childExitRecord(result: unknown): Record<string, unknown> {
+  return typeof result === "object" && result !== null ? result as Record<string, unknown> : {};
+}
+
+function childExitStatus(result: unknown): ChildAtomicExitStatus {
+  const record = childExitRecord(result);
+  const nestedExit = isRecord(record.exit) ? record.exit : undefined;
+  const rawStatus = optionalNonEmptyString(record.status)
+    ?? optionalNonEmptyString(record.exit_status)
+    ?? optionalNonEmptyString(nestedExit?.status);
+  const normalized = rawStatus?.toLowerCase();
+  if (normalized === "cancelled" || normalized === "canceled") return "cancelled";
+  if (normalized === "skipped") return "skipped";
+  return "blocked";
+}
+
+function childExitReason(result: unknown, fallback: string): string {
+  const record = childExitRecord(result);
+  const nestedExit = isRecord(record.exit) ? record.exit : undefined;
+  return optionalNonEmptyString(record.exitReason)
+    ?? optionalNonEmptyString(record.reason)
+    ?? optionalNonEmptyString(record.exit_reason)
+    ?? optionalNonEmptyString(nestedExit?.reason)
+    ?? fallback;
+}
+
+function domainStatusForChildExit(exitStatus: ChildAtomicExitStatus): WorkflowStatus {
+  return exitStatus === "cancelled" || exitStatus === "skipped" ? "stopped" : "blocked";
+}
+
+function exitWorkflow(ctx: unknown, outputs: Record<string, unknown>, exitStatus: unknown = outputs.status, exitReason: unknown = outputs.message): Record<string, unknown> {
+  const exit = typeof ctx === "object" && ctx !== null ? (ctx as { exit?: unknown }).exit : undefined;
+  if (typeof exit === "function") {
+    return exit.call(ctx, {
+      status: exitStatus,
+      reason: text(exitReason),
+      outputs,
+    }) as Record<string, unknown>;
+  }
+  return outputs;
 }
 
 const MAX_RECEIPT_STRING_CHARS = 2000;
@@ -424,288 +282,26 @@ function compactReceiptValue(value: unknown, depth = 0, seen = new WeakSet<objec
   return compacted;
 }
 
+const OMITTED_INLINE_RECEIPT_OUTPUT_KEYS = new Set(["plan", "receipts"]);
+
 function compactChildOutputForReceipt(childOutput: Record<string, unknown>): Record<string, unknown> {
   const compacted: Record<string, unknown> = {};
+  const omittedInlineChildOutputKeys: string[] = [];
   for (const [key, value] of Object.entries(childOutput)) {
+    if (OMITTED_INLINE_RECEIPT_OUTPUT_KEYS.has(key)) {
+      omittedInlineChildOutputKeys.push(key);
+      continue;
+    }
     compacted[key] = compactReceiptValue(value);
   }
+  if (omittedInlineChildOutputKeys.length > 0) compacted.omitted_inline_child_output_keys = omittedInlineChildOutputKeys.sort();
   return outputRecord(compacted);
 }
 
-type ChildRunGate =
-  | { state: "approved"; parent_status?: undefined; reason: string; approved: true; status?: string }
-  | { state: "non_approved"; parent_status: "needs_human"; reason: string; approved?: boolean; status?: string }
-  | { state: "blocked"; parent_status: "blocked"; reason: string; approved?: boolean; status: string }
-  | { state: "missing_approval"; parent_status: "needs_human"; reason: string; approved?: boolean; status?: string };
 
-type ChildReviewArtifact = {
-  body: string;
-  evidenceText: string;
-  trace: Record<string, unknown>;
-  reportPath?: string;
-};
 
-function optionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function optionalNonEmptyString(value: unknown): string | undefined {
-  const stringValue = typeof value === "string" ? value.trim() : "";
-  return stringValue.length > 0 ? stringValue : undefined;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-const CHILD_FAILURE_STATUSES = new Set(["blocked", "failed", "failure", "error", "errored"]);
-const CHILD_NEEDS_HUMAN_STATUSES = new Set(["needs_human", "rejected", "stopped", "active", "pending", "running"]);
-const CHILD_SUCCESS_STATUSES = new Set(["complete", "completed", "success", "succeeded", "passed"]);
-
-function childStatusIs(status: string | undefined, statuses: ReadonlySet<string>): boolean {
-  return status !== undefined && statuses.has(status);
-}
-
-export function gateChildRunCompletion(childOutput: Record<string, unknown>, runner: Exclude<ResolvedImplementationRunner, "handoff-only">): ChildRunGate {
-  const approved = optionalBoolean(childOutput.approved);
-  const status = optionalNonEmptyString(childOutput.status);
-  const normalizedStatus = status?.toLowerCase();
-
-  if (childStatusIs(normalizedStatus, CHILD_FAILURE_STATUSES)) {
-    return { state: "blocked", parent_status: "blocked", reason: `Child ${runner} returned status=${status}.`, approved, status };
-  }
-  if (approved === false) {
-    return { state: "non_approved", parent_status: "needs_human", reason: `Child ${runner} returned approved=false.`, approved, status };
-  }
-  if (childStatusIs(normalizedStatus, CHILD_NEEDS_HUMAN_STATUSES)) {
-    return { state: "non_approved", parent_status: "needs_human", reason: `Child ${runner} returned status=${status}.`, approved, status };
-  }
-  if (approved !== true) {
-    return { state: "missing_approval", parent_status: "needs_human", reason: `Child ${runner} did not return approved=true.`, approved, status };
-  }
-  if (normalizedStatus !== undefined && !childStatusIs(normalizedStatus, CHILD_SUCCESS_STATUSES)) {
-    return { state: "non_approved", parent_status: "needs_human", reason: `Child ${runner} returned unknown status=${status}.`, approved, status };
-  }
-
-  return { state: "approved", reason: `Child ${runner} returned approved=true.`, approved, status };
-}
-
-type CompactReviewPointer = {
-  kind: "output_saved_to" | "latest_review_round_artifact";
-  path?: string;
-};
-
-const ATOMIC_FILE_ONLY_SUFFIX_PATTERN = /\s+\(\d+(?:\.\d+)?\s*(?:B|KB|MB|GB),\s*\d+\s+lines?\)\.?(?:\s+Read this file if needed\.?)?$/i;
-
-function unquoteMatchingPath(value: string): string {
-  const quote = value[0];
-  if ((quote === '"' || quote === "'") && value[value.length - 1] === quote) return value.slice(1, -1);
-  return value;
-}
-
-function compactReviewPointerKind(label: string): CompactReviewPointer["kind"] {
-  return /^latest review round artifact$/i.test(label) ? "latest_review_round_artifact" : "output_saved_to";
-}
-
-function parseCompactReviewPointer(value: string): CompactReviewPointer | undefined {
-  const firstSubstantiveLine = value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.length > 0) ?? "";
-
-  const match = firstSubstantiveLine.match(/^(output saved to|saved output to|saved to|latest review round artifact):\s*(.*)$/i);
-  if (!match) return undefined;
-
-  const kind = compactReviewPointerKind(match[1]);
-  const target = match[2].trim();
-  if (target.length === 0) return { kind };
-
-  const path = unquoteMatchingPath(target.replace(ATOMIC_FILE_ONLY_SUFFIX_PATTERN, "").trim());
-  return { kind, path };
-}
-
-function appendMultilineReviewArtifactField(lines: string[], label: string, value: string): void {
-  lines.push(`${label}:`);
-  lines.push(...value
-    .replace(/\.\s+(?=P[0-3]\s*:)/gi, ".\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0));
-}
-
-function appendReviewArtifactField(lines: string[], label: string, value: unknown): void {
-  if (typeof value === "number" || typeof value === "boolean") {
-    lines.push(`${label}: ${String(value)}`);
-    return;
-  }
-  if (typeof value !== "string") return;
-
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return;
-
-  if (label === "raw_text" || label === "overall_explanation") {
-    appendMultilineReviewArtifactField(lines, label, trimmed);
-  } else {
-    lines.push(`${label}: ${trimmed}`);
-  }
-
-  if (label === "overall_correctness" && /\b(?:incorrect|wrong|not\s+correct|failed|failure)\b/i.test(trimmed)) {
-    lines.push(`P1: overall_correctness ${trimmed}`);
-  }
-}
-
-function prioritySeverity(value: unknown): SeverityLevel | undefined {
-  if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 3) return `p${value}` as SeverityLevel;
-  const match = typeof value === "string" ? value.match(/\bp([0-3])\b|^\s*([0-3])\s*$/i) : undefined;
-  const digit = match?.[1] ?? match?.[2];
-  return digit ? `p${digit}` as SeverityLevel : undefined;
-}
-
-function appendReviewFinding(lines: string[], finding: Record<string, unknown>): void {
-  const title = optionalNonEmptyString(finding.title);
-  const body = optionalNonEmptyString(finding.body) ?? optionalNonEmptyString(finding.description);
-  const priority = prioritySeverity(finding.priority ?? finding.severity);
-
-  if (priority !== undefined) lines.push(`${priority.toUpperCase()}: ${title ?? body ?? "structured finding"}`);
-  if (title !== undefined) lines.push(`finding_title: ${title}`);
-  if (body !== undefined) lines.push(`finding_body: ${body}`);
-  appendReviewArtifactField(lines, "priority", finding.priority ?? finding.severity);
-
-  const codeLocation = finding.code_location;
-  if (typeof codeLocation === "object" && codeLocation !== null) {
-    const path = optionalNonEmptyString((codeLocation as Record<string, unknown>).absolute_file_path);
-    if (path !== undefined) lines.push(`file: ${path}`);
-  }
-}
-
-function appendSeverityCounts(lines: string[], value: Record<string, unknown>): void {
-  for (const severity of SEVERITY_LEVELS) {
-    const count = value[severity] ?? value[severity.toUpperCase()];
-    if (typeof count === "number" && Number.isFinite(count) && count > 0) {
-      lines.push(`${severity.toUpperCase()}: severity count reported ${Math.floor(count)}`);
-    } else if (typeof count === "number" && count === 0) {
-      lines.push(`${severity.toUpperCase()}: none`);
-    }
-  }
-}
-
-function appendReviewArtifactJson(lines: string[], value: unknown, key = "root"): void {
-  if (Array.isArray(value)) {
-    for (const item of value) appendReviewArtifactJson(lines, item, key);
-    return;
-  }
-  if (typeof value !== "object" || value === null) return;
-
-  const record = value as Record<string, unknown>;
-  if (key === "findings") {
-    appendReviewFinding(lines, record);
-  }
-
-  for (const [childKey, childValue] of Object.entries(record)) {
-    if (childKey === "findings" && Array.isArray(childValue)) {
-      for (const finding of childValue) {
-        if (typeof finding === "object" && finding !== null) appendReviewFinding(lines, finding as Record<string, unknown>);
-      }
-      continue;
-    }
-    if (childKey === "severity_counts" && typeof childValue === "object" && childValue !== null) {
-      appendSeverityCounts(lines, childValue as Record<string, unknown>);
-      continue;
-    }
-    if (/^(?:reviewer|overall_correctness|overall_explanation|raw_text|validation(?:_notes|_output|_summary|_results)?|commands_run|notes?)$/i.test(childKey)) {
-      appendReviewArtifactField(lines, childKey, childValue);
-      continue;
-    }
-    appendReviewArtifactJson(lines, childValue, childKey);
-  }
-}
-
-export function reviewArtifactToEvidenceText(body: string): string {
-  try {
-    const parsed = JSON.parse(body) as unknown;
-    const lines: string[] = [];
-    appendReviewArtifactJson(lines, parsed);
-    return lines.length > 0 ? lines.join("\n") : body;
-  } catch {
-    return body;
-  }
-}
-
-async function loadReviewArtifactPath(path: string): Promise<string> {
-  const body = await readFile(path, "utf8");
-  if (body.trim().length === 0) throw new Error(`Child review artifact is empty: ${path}`);
-  return body;
-}
-
-async function loadReviewEvidenceArtifact(path: string, trace: Record<string, unknown>): Promise<ChildReviewArtifact> {
-  const body = await loadReviewArtifactPath(path);
-  return {
-    body,
-    evidenceText: reviewArtifactToEvidenceText(body),
-    reportPath: path,
-    trace,
-  };
-}
-
-export async function loadChildReviewArtifact(childOutput: Record<string, unknown>): Promise<ChildReviewArtifact> {
-  const reviewReportPath = optionalNonEmptyString(childOutput.review_report_path);
-  const inlineReviewReport = optionalNonEmptyString(childOutput.review_report);
-  const inlineCompactPointer = inlineReviewReport !== undefined ? parseCompactReviewPointer(inlineReviewReport) : undefined;
-
-  if (reviewReportPath !== undefined) {
-    try {
-      return await loadReviewEvidenceArtifact(reviewReportPath, { source: "review_report_path", path: reviewReportPath, loaded: true });
-    } catch (error) {
-      const reviewReportPathError = errorMessage(error);
-      return {
-        body: "",
-        evidenceText: `blocked unable to review missing dependency: child review_report_path unreadable: ${reviewReportPath}: ${reviewReportPathError}`,
-        trace: { source: "review_report_path", path: reviewReportPath, loaded: false, error: reviewReportPathError, fail_closed: true },
-      };
-    }
-  }
-
-  if (inlineReviewReport !== undefined) {
-    if (inlineCompactPointer !== undefined) {
-      if (inlineCompactPointer.path !== undefined) {
-        try {
-          return await loadReviewEvidenceArtifact(inlineCompactPointer.path, {
-            source: "inline_review_report_pointer",
-            path: inlineCompactPointer.path,
-            loaded: true,
-            compact_pointer: true,
-            pointer_kind: inlineCompactPointer.kind,
-          });
-        } catch (error) {
-          const pointerErrorMessage = errorMessage(error);
-          return {
-            body: "",
-            evidenceText: `blocked unable to review missing dependency: compact child review_report pointer unreadable: ${inlineCompactPointer.path}: ${pointerErrorMessage}`,
-            trace: { source: "inline_review_report_pointer", path: inlineCompactPointer.path, loaded: false, compact_pointer: true, pointer_kind: inlineCompactPointer.kind, error: pointerErrorMessage, fail_closed: true },
-          };
-        }
-      }
-      return {
-        body: "",
-        evidenceText: "blocked unable to review missing dependency: child review_report is only a compact file-only pointer without a readable path",
-        trace: { source: "inline_review_report_pointer", loaded: false, compact_pointer: true, pointer_kind: inlineCompactPointer.kind, fail_closed: true },
-      };
-    }
-    return {
-      body: inlineReviewReport,
-      evidenceText: reviewArtifactToEvidenceText(inlineReviewReport),
-      trace: { source: "inline_review_report", loaded: true },
-    };
-  }
-
-  return {
-    body: "",
-    evidenceText: "blocked unable to review missing dependency: child output did not include review_report_path or substantive review_report",
-    trace: { source: "missing_child_review_report", loaded: false, fail_closed: true },
-  };
-}
-
-const COMPOUND_ENGINEERING_EVIDENCE_KEY = "compound_engineering_evidence";
+const LEGACY_COMPOUND_ENGINEERING_EVIDENCE_KEY = "compound_engineering_evidence";
+const DECLARED_REVIEW_EVIDENCE_KEYS = ["review_evidence", "compound_review_evidence"] as const;
 
 type StructuredEvidenceCommand = {
   command?: string;
@@ -741,9 +337,7 @@ type StructuredEvidenceGate = {
   childReviewArtifact?: ChildReviewArtifact;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+
 
 function compactErrorList(values: readonly string[]): string[] {
   return [...new Set(values)].slice(0, 20);
@@ -754,7 +348,7 @@ function hasSubstantiveEvidence(value: unknown): boolean {
 }
 
 const PASSING_COMMAND_SUMMARY_PATTERN = /\b(?:pass(?:ed|es|ing)?|succeed(?:ed|s|ing)?|success(?:ful|fully)?|exit\s+(?:code|status)\s*:?\s*0|(?:exit_)?code\s*:?\s*0|status\s*:?\s*0|0\s+(?:failures?|errors?)|zero\s+(?:failures?|errors?)|no\s+(?:failures?|errors?)|all\s+tests?\s+passed)\b/i;
-const FAILING_COMMAND_SUMMARY_PATTERN = /\b(?:fail(?:ed|s|ing|ures?)|errored|non[-\s]?zero|exit\s+(?:code|status)\s*:?\s*[1-9]\d*|(?:exit_)?code\s*:?\s*[1-9]\d*|status\s*:?\s*[1-9]\d*)\b/i;
+const FAILING_COMMAND_SUMMARY_PATTERN = /\b(?:failed|fails|failing|errored|non[-\s]?zero|exit\s+(?:code|status)\s*:?\s*[1-9]\d*|(?:exit_)?code\s*:?\s*[1-9]\d*|status\s*:?\s*[1-9]\d*|[1-9]\d*\s+(?:failures?|errors?)|(?:failures?|errors?)\s*:?\s*[1-9]\d*)\b/i;
 
 function commandSummaryPasses(summary: unknown): boolean {
   if (typeof summary !== "string") return false;
@@ -767,9 +361,9 @@ function validationCommandsPass(commands: unknown): boolean {
   if (!Array.isArray(commands)) return false;
   for (const command of commands) {
     if (!isRecord(command)) return false;
-    const exitCode = command.exit_code;
-    if (typeof exitCode === "number" && Number.isFinite(exitCode)) {
-      if (Math.trunc(exitCode) !== 0) return false;
+    if (Object.prototype.hasOwnProperty.call(command, "exit_code")) {
+      const exitCode = command.exit_code;
+      if (typeof exitCode !== "number" || !Number.isInteger(exitCode) || exitCode !== 0) return false;
       continue;
     }
     if (!commandSummaryPasses(command.summary)) return false;
@@ -791,11 +385,11 @@ function readSeverityCounts(value: unknown, errors: string[]): Required<Severity
   const counts: Partial<Required<SeverityCounts>> = {};
   for (const severity of SEVERITY_LEVELS) {
     const count = value[severity];
-    if (typeof count !== "number" || !Number.isFinite(count) || count < 0) {
-      errors.push(`severity_counts.${severity} must be a non-negative number`);
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 0) {
+      errors.push(`severity_counts.${severity} must be a non-negative integer`);
       return undefined;
     }
-    counts[severity] = Math.floor(count);
+    counts[severity] = count;
   }
 
   return counts as Required<SeverityCounts>;
@@ -810,7 +404,7 @@ function structuredEvidenceToReviewEvidence(value: unknown): { evidence: ReviewE
     return {
       evidence,
       missing: [...REVIEW_CRITERIA],
-      errors: [`${COMPOUND_ENGINEERING_EVIDENCE_KEY} must be an object`],
+      errors: ["review_evidence must be an object"],
     };
   }
 
@@ -846,9 +440,14 @@ function structuredEvidenceToReviewEvidence(value: unknown): { evidence: ReviewE
   const severity_counts = readSeverityCounts(value.severity_counts, errors);
   if (severity_counts !== undefined) evidence.severity_counts = severity_counts;
 
-  if (typeof value.blocked === "boolean") evidence.blocked = value.blocked;
-  if (typeof value.conflicted === "boolean") evidence.conflicted = value.conflicted;
-  if (typeof value.validation_failed === "boolean") evidence.validation_failed = value.validation_failed;
+  for (const flag of ["blocked", "conflicted", "validation_failed"] as const) {
+    if (!Object.prototype.hasOwnProperty.call(value, flag)) continue;
+    if (typeof value[flag] === "boolean") {
+      evidence[flag] = value[flag];
+    } else {
+      errors.push(`${flag} must be boolean when present`);
+    }
+  }
   if (isRecord(value.validation_backed) && validationCommandsPass(value.validation_backed.commands) === false) {
     evidence.validation_backed = false;
     evidence.validation_failed = true;
@@ -859,21 +458,51 @@ function structuredEvidenceToReviewEvidence(value: unknown): { evidence: ReviewE
   return { evidence, missing, errors: compactErrorList(errors) };
 }
 
-function findNamedEvidence(value: unknown, seen = new WeakSet<object>()): unknown | undefined {
-  if (!isRecord(value) && !Array.isArray(value)) return undefined;
-  if (seen.has(value)) return undefined;
+type JsonEvidenceExtraction = {
+  evidence?: unknown;
+  legacyEvidenceFound: boolean;
+};
+
+function valueLooksLikeReviewEvidence(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return REVIEW_CRITERIA.some((criterion) => isRecord(value[criterion]))
+    || isRecord(value.severity_counts);
+}
+
+function findDeclaredArtifactEvidence(value: unknown, seen = new WeakSet<object>()): JsonEvidenceExtraction {
+  if (!isRecord(value) && !Array.isArray(value)) return { legacyEvidenceFound: false };
+  if (seen.has(value)) return { legacyEvidenceFound: false };
   seen.add(value);
 
-  if (isRecord(value) && Object.prototype.hasOwnProperty.call(value, COMPOUND_ENGINEERING_EVIDENCE_KEY)) {
-    return value[COMPOUND_ENGINEERING_EVIDENCE_KEY];
+  let legacyEvidenceFound = false;
+  if (isRecord(value)) {
+    if (Object.prototype.hasOwnProperty.call(value, LEGACY_COMPOUND_ENGINEERING_EVIDENCE_KEY)) legacyEvidenceFound = true;
+    for (const key of DECLARED_REVIEW_EVIDENCE_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        return { evidence: value[key], legacyEvidenceFound };
+      }
+    }
+    if (valueLooksLikeReviewEvidence(value)) return { evidence: value, legacyEvidenceFound };
   }
 
-  const values = Array.isArray(value) ? value : Object.values(value);
-  for (const childValue of values) {
-    const found = findNamedEvidence(childValue, seen);
-    if (found !== undefined) return found;
+  if (Array.isArray(value)) {
+    for (const childValue of value) {
+      const found = findDeclaredArtifactEvidence(childValue, seen);
+      legacyEvidenceFound = legacyEvidenceFound || found.legacyEvidenceFound;
+      if (found.evidence !== undefined) return { evidence: found.evidence, legacyEvidenceFound };
+    }
+  } else {
+    for (const [key, childValue] of Object.entries(value)) {
+      if (key === LEGACY_COMPOUND_ENGINEERING_EVIDENCE_KEY) {
+        legacyEvidenceFound = true;
+        continue;
+      }
+      const found = findDeclaredArtifactEvidence(childValue, seen);
+      legacyEvidenceFound = legacyEvidenceFound || found.legacyEvidenceFound;
+      if (found.evidence !== undefined) return { evidence: found.evidence, legacyEvidenceFound };
+    }
   }
-  return undefined;
+  return { legacyEvidenceFound };
 }
 
 function parseJsonCandidate(value: string): unknown | undefined {
@@ -884,19 +513,189 @@ function parseJsonCandidate(value: string): unknown | undefined {
   }
 }
 
-function extractJsonEvidenceFromBody(body: string): unknown | undefined {
+type NativeReviewRoundGate = {
+  childEvidence: ReviewEvidence;
+  trace: Record<string, unknown>;
+  missing: ReviewCriterion[];
+  errors: string[];
+};
+
+function nativeReviewEvidence(severity_counts: Required<SeverityCounts>): ReviewEvidence {
+  return {
+    independent: true,
+    acceptance_mapped: true,
+    diff_aware: true,
+    validation_backed: true,
+    risk_aware: true,
+    fresh: true,
+    severity_counts,
+  };
+}
+
+function isNativeReviewRoundCandidate(value: unknown): value is Record<string, unknown> {
+  return isRecord(value)
+    && Object.prototype.hasOwnProperty.call(value, "reviews")
+    && (Object.prototype.hasOwnProperty.call(value, "turn") || Object.prototype.hasOwnProperty.call(value, "iteration"));
+}
+
+function reviewerErrorIsPresent(value: unknown): boolean {
+  if (value === undefined || value === null || value === false) return false;
+  return !(typeof value === "string" && value.trim().length === 0);
+}
+
+function nativeFindingSeverity(value: unknown): SeverityLevel | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 3) return `p${value}` as SeverityLevel;
+  if (typeof value !== "string") return undefined;
+  const match = value.trim().match(/^(?:p)?([0-3])$/i);
+  return match ? `p${match[1]}` as SeverityLevel : undefined;
+}
+
+function readNativeDecisionFindings(value: unknown, errors: string[], reviewIndex: number): Required<SeverityCounts> {
+  const counts = emptySeverityCounts();
+  if (value === undefined) return counts;
+  if (!Array.isArray(value)) {
+    errors.push(`reviews[${reviewIndex}].decision.findings must be an array when present`);
+    return counts;
+  }
+
+  for (let findingIndex = 0; findingIndex < value.length; findingIndex += 1) {
+    const finding = value[findingIndex];
+    if (!isRecord(finding)) {
+      errors.push(`reviews[${reviewIndex}].decision.findings[${findingIndex}] must be an object`);
+      continue;
+    }
+    const severityValue = finding.priority ?? finding.severity;
+    const severity = nativeFindingSeverity(severityValue);
+    if (severity === undefined) {
+      errors.push(`reviews[${reviewIndex}].decision.findings[${findingIndex}] has unknown or malformed severity`);
+      continue;
+    }
+    counts[severity] += 1;
+  }
+  return counts;
+}
+
+function mergeSeverityCounts(target: Required<SeverityCounts>, source: Required<SeverityCounts>): void {
+  for (const severity of SEVERITY_LEVELS) target[severity] += source[severity];
+}
+
+function findNativeReviewRound(value: unknown, seen = new WeakSet<object>()): Record<string, unknown> | undefined {
+  if (!isRecord(value) && !Array.isArray(value)) return undefined;
+  if (seen.has(value)) return undefined;
+  seen.add(value);
+
+  if (isNativeReviewRoundCandidate(value)) return value;
+  if (Array.isArray(value)) {
+    for (const childValue of value) {
+      const found = findNativeReviewRound(childValue, seen);
+      if (found !== undefined) return found;
+    }
+  } else {
+    for (const [key, childValue] of Object.entries(value)) {
+      if (key === LEGACY_COMPOUND_ENGINEERING_EVIDENCE_KEY) continue;
+      const found = findNativeReviewRound(childValue, seen);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
+}
+
+function parseNativeReviewRound(value: Record<string, unknown>, runner: Exclude<ResolvedImplementationRunner, "handoff-only">): NativeReviewRoundGate {
+  const errors: string[] = [];
+  const severity_counts = emptySeverityCounts();
+  const sourceKind = runner === "goal" ? "native_goal_review_round" : "native_ralph_review_round";
+
+  if (Object.prototype.hasOwnProperty.call(value, "stop_review_loop") && value.stop_review_loop !== true) {
+    errors.push("stop_review_loop must be true when present");
+  }
+  if (reviewerErrorIsPresent(value.reviewer_error)) {
+    errors.push("native review round contains reviewer_error");
+  }
+
+  if (!Array.isArray(value.reviews) || value.reviews.length === 0) {
+    errors.push("native review round must include a non-empty reviews array");
+  } else {
+    for (let reviewIndex = 0; reviewIndex < value.reviews.length; reviewIndex += 1) {
+      const review = value.reviews[reviewIndex];
+      if (!isRecord(review)) {
+        errors.push(`reviews[${reviewIndex}] must be an object`);
+        continue;
+      }
+      if (optionalNonEmptyString(review.reviewer) === undefined) {
+        errors.push(`reviews[${reviewIndex}].reviewer must be a non-empty string`);
+      }
+      if (reviewerErrorIsPresent(review.reviewer_error)) {
+        errors.push(`reviews[${reviewIndex}] contains reviewer_error`);
+      }
+      if (Object.prototype.hasOwnProperty.call(review, "stop_review_loop") && review.stop_review_loop !== true) {
+        errors.push(`reviews[${reviewIndex}].stop_review_loop must be true when present`);
+      }
+      const decision = review.decision;
+      if (!isRecord(decision)) {
+        errors.push(`reviews[${reviewIndex}].decision must be an object`);
+        continue;
+      }
+      if (reviewerErrorIsPresent(decision.reviewer_error)) {
+        errors.push(`reviews[${reviewIndex}].decision contains reviewer_error`);
+      }
+      if (Object.prototype.hasOwnProperty.call(decision, "stop_review_loop") && decision.stop_review_loop !== true) {
+        errors.push(`reviews[${reviewIndex}].decision.stop_review_loop must be true when present`);
+      }
+      if (typeof decision.overall_correctness !== "string" || decision.overall_correctness.trim().toLowerCase() !== "patch is correct") {
+        errors.push(`reviews[${reviewIndex}].decision.overall_correctness must be \"patch is correct\"`);
+      }
+      mergeSeverityCounts(severity_counts, readNativeDecisionFindings(decision.findings, errors, reviewIndex));
+    }
+  }
+
+  const childEvidence = nativeReviewEvidence(severity_counts);
+  return {
+    childEvidence,
+    trace: {
+      contract: "native_builtin_review_round",
+      source_kind: sourceKind,
+      loaded: errors.length === 0,
+      turn: value.turn,
+      iteration: value.iteration,
+      review_count: Array.isArray(value.reviews) ? value.reviews.length : 0,
+      missing: errors.length > 0 ? [...REVIEW_CRITERIA] : [],
+      errors: compactErrorList(errors),
+    },
+    missing: errors.length > 0 ? [...REVIEW_CRITERIA] : [],
+    errors: compactErrorList(errors),
+  };
+}
+
+function extractNativeReviewRoundFromBody(body: string, runner: Exclude<ResolvedImplementationRunner, "handoff-only">): NativeReviewRoundGate | undefined {
   const parsedBody = parseJsonCandidate(body);
-  const direct = parsedBody !== undefined ? findNamedEvidence(parsedBody) : undefined;
-  if (direct !== undefined) return direct;
+  const directNative = parsedBody !== undefined ? findNativeReviewRound(parsedBody) : undefined;
+  if (directNative !== undefined) return parseNativeReviewRound(directNative, runner);
 
   const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
   for (const match of body.matchAll(fencePattern)) {
     const parsedFence = parseJsonCandidate(match[1].trim());
-    const fromFence = parsedFence !== undefined ? findNamedEvidence(parsedFence) : undefined;
-    if (fromFence !== undefined) return fromFence;
+    const fencedNative = parsedFence !== undefined ? findNativeReviewRound(parsedFence) : undefined;
+    if (fencedNative !== undefined) return parseNativeReviewRound(fencedNative, runner);
   }
 
   return undefined;
+}
+
+function extractJsonEvidenceFromBody(body: string): JsonEvidenceExtraction {
+  const parsedBody = parseJsonCandidate(body);
+  const direct = parsedBody !== undefined ? findDeclaredArtifactEvidence(parsedBody) : { legacyEvidenceFound: false };
+  if (direct.evidence !== undefined) return direct;
+
+  let legacyEvidenceFound = direct.legacyEvidenceFound;
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  for (const match of body.matchAll(fencePattern)) {
+    const parsedFence = parseJsonCandidate(match[1].trim());
+    const fromFence = parsedFence !== undefined ? findDeclaredArtifactEvidence(parsedFence) : { legacyEvidenceFound: false };
+    legacyEvidenceFound = legacyEvidenceFound || fromFence.legacyEvidenceFound;
+    if (fromFence.evidence !== undefined) return { evidence: fromFence.evidence, legacyEvidenceFound };
+  }
+
+  return { legacyEvidenceFound };
 }
 
 function structuredEvidenceNeedsHumanReduction(gate: StructuredEvidenceGate, fallback: ReviewEvidenceReduction): ReviewEvidenceReduction {
@@ -911,31 +710,14 @@ function structuredEvidenceNeedsHumanReduction(gate: StructuredEvidenceGate, fal
   return fallback;
 }
 
-async function loadStructuredChildEvidence(childOutput: Record<string, unknown>): Promise<StructuredEvidenceGate> {
-  const directEvidence = childOutput[COMPOUND_ENGINEERING_EVIDENCE_KEY];
-  if (directEvidence !== undefined) {
-    const converted = structuredEvidenceToReviewEvidence(directEvidence);
-    return {
-      childEvidence: converted.evidence,
-      trace: {
-        source: "child_output",
-        contract: COMPOUND_ENGINEERING_EVIDENCE_KEY,
-        loaded: true,
-        missing: converted.missing,
-        errors: converted.errors,
-      },
-      missing: converted.missing,
-      errors: converted.errors,
-    };
-  }
-
+async function loadStructuredChildEvidence(childOutput: Record<string, unknown>, runner: Exclude<ResolvedImplementationRunner, "handoff-only">): Promise<StructuredEvidenceGate> {
   const childReviewArtifact = await loadChildReviewArtifact(childOutput);
   if (childReviewArtifact.trace.fail_closed === true) {
     return {
       childEvidence: { blocked: true, severity_counts: emptySeverityCounts() },
       trace: {
         ...childReviewArtifact.trace,
-        contract: COMPOUND_ENGINEERING_EVIDENCE_KEY,
+        contract: "declared_child_review_artifact",
         loaded: false,
         errors: ["child review artifact was missing or unreadable"],
       },
@@ -945,15 +727,32 @@ async function loadStructuredChildEvidence(childOutput: Record<string, unknown>)
     };
   }
 
+  const nativeReviewRound = extractNativeReviewRoundFromBody(childReviewArtifact.body, runner);
+  if (nativeReviewRound !== undefined) {
+    return {
+      childEvidence: nativeReviewRound.childEvidence,
+      trace: {
+        ...childReviewArtifact.trace,
+        ...nativeReviewRound.trace,
+      },
+      missing: nativeReviewRound.missing,
+      errors: nativeReviewRound.errors,
+      childReviewArtifact,
+    };
+  }
+
   const artifactEvidence = extractJsonEvidenceFromBody(childReviewArtifact.body);
-  if (artifactEvidence === undefined) {
-    const missingError = `missing named ${COMPOUND_ENGINEERING_EVIDENCE_KEY} block in child review artifact`;
+  if (artifactEvidence.evidence === undefined) {
+    const missingError = artifactEvidence.legacyEvidenceFound
+      ? "legacy compound_engineering_evidence was ignored; child review artifact must use declared review_report/review_report_path content with review_evidence"
+      : "missing review_evidence object in child review artifact";
     return {
       childEvidence: { severity_counts: emptySeverityCounts() },
       trace: {
         ...childReviewArtifact.trace,
-        contract: COMPOUND_ENGINEERING_EVIDENCE_KEY,
+        contract: "declared_child_review_artifact",
         loaded: false,
+        legacy_compound_engineering_evidence_ignored: artifactEvidence.legacyEvidenceFound,
         errors: [missingError],
       },
       missing: [...REVIEW_CRITERIA],
@@ -962,13 +761,14 @@ async function loadStructuredChildEvidence(childOutput: Record<string, unknown>)
     };
   }
 
-  const converted = structuredEvidenceToReviewEvidence(artifactEvidence);
+  const converted = structuredEvidenceToReviewEvidence(artifactEvidence.evidence);
   return {
     childEvidence: converted.evidence,
     trace: {
       ...childReviewArtifact.trace,
-      contract: COMPOUND_ENGINEERING_EVIDENCE_KEY,
+      contract: "declared_child_review_artifact",
       loaded: true,
+      legacy_compound_engineering_evidence_ignored: artifactEvidence.legacyEvidenceFound,
       missing: converted.missing,
       errors: converted.errors,
     },
@@ -1036,6 +836,83 @@ async function writeCompactFinalReport(options: {
   ].join("\n")));
 }
 
+const reviewEvidenceCriterionSchema = Type.Object({
+  satisfied: Type.Boolean(),
+  evidence: Type.Optional(Type.String()),
+  source: Type.Optional(Type.String()),
+  commands: Type.Optional(Type.Array(Type.Object({
+    command: Type.Optional(Type.String()),
+    exit_code: Type.Optional(Type.Integer()),
+    summary: Type.Optional(Type.String()),
+  }, { additionalProperties: false }))),
+}, { additionalProperties: false });
+
+const severityCountsSchema = Type.Object({
+  p0: Type.Integer(),
+  p1: Type.Integer(),
+  p2: Type.Integer(),
+  p3: Type.Integer(),
+}, { additionalProperties: false });
+
+const normalizedReviewEvidenceSchema = Type.Object({
+  independent: reviewEvidenceCriterionSchema,
+  acceptance_mapped: reviewEvidenceCriterionSchema,
+  diff_aware: reviewEvidenceCriterionSchema,
+  validation_backed: reviewEvidenceCriterionSchema,
+  risk_aware: reviewEvidenceCriterionSchema,
+  fresh: reviewEvidenceCriterionSchema,
+  severity_counts: severityCountsSchema,
+  blocked: Type.Optional(Type.Boolean()),
+  conflicted: Type.Optional(Type.Boolean()),
+  validation_failed: Type.Optional(Type.Boolean()),
+}, { additionalProperties: false, description: "Structured review evidence read from declared child review_report/review_report_path artifacts." });
+
+const implementationLeafSchema = Type.Union([
+  Type.String(),
+  Type.Number(),
+  Type.Boolean(),
+  Type.Null(),
+  Type.Array(Type.Union([Type.String(), Type.Number(), Type.Boolean(), Type.Null(), Type.Object({}, { additionalProperties: true })])),
+  Type.Object({}, { additionalProperties: true }),
+]);
+
+const implementationSchema = Type.Union([
+  Type.Object({
+    kind: Type.Literal("guarded_handoff"),
+    requested_runner: Type.String(),
+    resolved_runner: resolvedRunnerSchema,
+    workflow: resolvedRunnerSchema,
+    inputs: Type.Object({}, { additionalProperties: implementationLeafSchema }),
+    safe_note: Type.String(),
+    child_workflow_launched: Type.Boolean(),
+  }, { additionalProperties: false }),
+  Type.Object({
+    kind: Type.Literal("child_workflow_receipt"),
+    requested_runner: Type.String(),
+    resolved_runner: resolvedRunnerSchema,
+    workflow: resolvedRunnerSchema,
+    inputs: Type.Object({}, { additionalProperties: implementationLeafSchema }),
+    safe_note: Type.String(),
+    child_workflow_launched: Type.Boolean(),
+    child_exited: Type.Optional(Type.Boolean()),
+    outputs: Type.Object({}, { additionalProperties: implementationLeafSchema }),
+    evidence: Type.Optional(Type.Object({}, { additionalProperties: implementationLeafSchema })),
+    gate_child_run_completion: Type.Object({}, { additionalProperties: implementationLeafSchema }),
+    gate_review_evidence: Type.Optional(Type.Object({}, { additionalProperties: implementationLeafSchema })),
+  }, { additionalProperties: false }),
+  Type.Object({
+    kind: Type.Literal("worktree_root_resolution_failed"),
+    requested_runner: Type.String(),
+    resolved_runner: resolvedRunnerSchema,
+    workflow: resolvedRunnerSchema,
+    requested_git_worktree_dir: Type.String(),
+    safe_note: Type.String(),
+    child_workflow_launched: Type.Boolean(),
+  }, { additionalProperties: false }),
+], { description: "Typed implementation receipt union; dynamic child details are constrained to leaf objects." });
+
+void normalizedReviewEvidenceSchema;
+
 const compoundEngineeringWorkflow = defineWorkflow("compound-engineering")
   .description("Safe Compound Engineering loop: classify intake, scout memory, brainstorm/plan, require approval, run explicit implementation runners, gate review evidence, and optionally capture learning.")
   .input("prompt", Type.String({ description: "Idea, spec/plan path, work request, review target, or learning-capture request." }))
@@ -1053,7 +930,7 @@ const compoundEngineeringWorkflow = defineWorkflow("compound-engineering")
     Type.Literal("ralph"),
     Type.Literal("handoff-only"),
   ], { default: "auto", description: "auto, goal, ralph, or handoff-only. Iteration 3 auto resolves to handoff-only; explicit goal/ralph run after approval." }))
-  .input("max_loops", Type.Number({ default: DEFAULT_MAX_LOOPS, description: "Maximum implementation/fix/review loops to include in handoff metadata." }))
+  .input("max_loops", Type.Integer({ default: DEFAULT_MAX_LOOPS, description: "Maximum implementation/fix/review loops to include in handoff metadata." }))
   .input("base_branch", Type.String({ default: DEFAULT_BASE_BRANCH, description: "Base branch for implementation/review handoff." }))
   .input("git_worktree_dir", Type.String({ default: "", description: "Optional reusable worktree directory for implementation handoff." }))
   .input("create_pr", Type.Boolean({ default: false, description: "Strict true authorizes PR creation in handoff inputs; default false." }))
@@ -1082,7 +959,7 @@ const compoundEngineeringWorkflow = defineWorkflow("compound-engineering")
   .output("plan_path", Type.Optional(Type.String({ description: "Saved plan path." })))
   .output("spec_path", Type.Optional(Type.String({ description: "Saved spec path." })))
   .output("approved_spec_path", Type.Optional(Type.String({ description: "Approved plan/spec path." })))
-  .output("implementation", Type.Optional(Type.Object({}, { additionalProperties: true, description: "Guarded handoff metadata or child-run summary." })))
+  .output("implementation", Type.Optional(implementationSchema))
   .output("review_report_path", Type.Optional(Type.String({ description: "Saved normalized review/evidence report path." })))
   .output("learning_doc_path", Type.Optional(Type.String({ description: "Saved docs/solutions learning artifact path." })))
   .run(async (ctx) => {
@@ -1099,6 +976,19 @@ const compoundEngineeringWorkflow = defineWorkflow("compound-engineering")
     const baseBranch = text(ctx.inputs.base_branch, DEFAULT_BASE_BRANCH);
     const gitWorktreeDir = text(ctx.inputs.git_worktree_dir);
     const createPr = normalizeCreatePr(ctx.inputs.create_pr);
+
+    if (prompt.length === 0) {
+      return exitWorkflow(ctx, outputRecord({
+        status: "blocked",
+        mode,
+        runner,
+        approved: false,
+        artifact_dir: "",
+        manifest_path: "",
+        message: "Blocked: prompt is required.",
+      }));
+    }
+
     const { runId, artifactDir } = await createArtifactRun(WORKFLOW_NAME, startedAt, cwd);
     const artifacts = new Map<string, string>();
     const addArtifact = (name: string, path: string): string => {
@@ -1153,13 +1043,6 @@ const compoundEngineeringWorkflow = defineWorkflow("compound-engineering")
 
       return { selectedLearningMode, learningDocPath };
     };
-
-    if (prompt.length === 0) {
-      const message = "Blocked: prompt is required.";
-      await writeFinalReport({ status: "blocked", mode, runner, prompt, message });
-      await writeFinalManifest({ manifestPath, runId, startedAt, input: baseInput, finalReportPath, artifacts });
-      return outputRecord({ status: "blocked", mode, runner, approved: false, artifact_dir: displayPath(artifactDir), manifest_path: displayPath(manifestPath), message });
-    }
 
     await writeArtifactMarkdown("intake", join(artifactDir, "00-intake.md"), artifactMarkdown("Compound Engineering intake", [
       `Resolved mode: ${mode}`,
@@ -1395,7 +1278,53 @@ const compoundEngineeringWorkflow = defineWorkflow("compound-engineering")
       stageName: `${runner} implementation`,
       inputs: childInputs,
     });
-    const childOutput = normalizedChildOutput(childResult);
+    if (childWorkflowExited(childResult)) {
+      const childOutput = normalizedChildOutput(childResult, runner);
+      const receiptChildOutput = compactChildOutputForReceipt(childOutput);
+      const exitStatus = childExitStatus(childResult);
+      const domainStatus = domainStatusForChildExit(exitStatus);
+      const exitReason = childExitReason(childResult, `${runner} child workflow exited before returning declared completion evidence.`);
+      const childExitGate = {
+        state: "child_exited",
+        parent_status: domainStatus,
+        reason: exitReason,
+        exited: true,
+        exit_status: exitStatus,
+        exit_reason: exitReason,
+      };
+      const implementation = outputRecord({
+        kind: "child_workflow_receipt",
+        requested_runner: requestedRunner,
+        resolved_runner: runner,
+        workflow: runner,
+        inputs: childInputs,
+        safe_note: handoff.safe_note,
+        child_workflow_launched: true,
+        child_exited: true,
+        outputs: receiptChildOutput,
+        gate_child_run_completion: childExitGate,
+      });
+      const message = `Plan/spec approved and ${runner} child workflow exited (${exitStatus}) before returning declared completion evidence.`;
+      const output = outputRecord({
+        status: domainStatus,
+        mode,
+        runner,
+        approved: false,
+        artifact_dir: displayPath(artifactDir),
+        manifest_path: displayPath(manifestPath),
+        message,
+        brainstorm_path: brainstormPath ? displayPath(brainstormPath) : undefined,
+        plan_path: displayPath(planPath),
+        spec_path: displayPath(specPath),
+        approved_spec_path: displayPath(approvedSpecPath),
+        implementation,
+      });
+      await writeFinalReport({ status: domainStatus, mode, runner, prompt, message, implementation });
+      await writeFinalManifest({ manifestPath, runId, startedAt, input: { ...baseInput, approval_decision: approvalDecision, revisions }, finalReportPath, artifacts });
+      return exitWorkflow(ctx, output, exitStatus, exitReason);
+    }
+
+    const childOutput = normalizedChildOutput(childResult, runner);
     const receiptChildOutput = compactChildOutputForReceipt(childOutput);
     const childGate = gateChildRunCompletion(childOutput, runner);
     let reviewReportPath: string | undefined;
@@ -1436,7 +1365,7 @@ const compoundEngineeringWorkflow = defineWorkflow("compound-engineering")
       });
     }
 
-    const structuredGate = await loadStructuredChildEvidence(childOutput);
+    const structuredGate = await loadStructuredChildEvidence(childOutput, runner);
     const childReviewArtifact = structuredGate.childReviewArtifact;
     if (childReviewArtifact?.reportPath !== undefined) reviewReportPath = addArtifact("child-review-report", childReviewArtifact.reportPath);
     const childEvidence = structuredGate.childEvidence;
@@ -1513,5 +1442,4 @@ const compoundEngineeringWorkflow = defineWorkflow("compound-engineering")
   })
   .compile();
 
-export { compoundEngineeringWorkflow };
 export default compoundEngineeringWorkflow;

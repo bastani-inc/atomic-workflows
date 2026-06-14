@@ -33,7 +33,7 @@ From an Atomic chat session:
 
 Reporting workflows write their final Markdown report to disk and return compact metadata instead of returning the full report inline.
 
-Reporting workflows save final reports under project-root output folders. Compound Engineering visible Markdown artifacts are collision-safe and use `-2`, `-3`, ... suffixes when a same-day slug already exists:
+Reporting workflows save final reports under project-root output folders. Compound Engineering visible Markdown artifacts are collision-safe and use `-2`, `-3`, ... suffixes when a same-day slug already exists. `./compound-engineering/` is generated and gitignored, matching the generated `./review-board/` and `./security-gate/` report folders:
 
 ```text
 ./compound-engineering/YYYY-MM-DD-<topic>.md
