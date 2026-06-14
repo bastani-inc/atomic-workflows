@@ -221,7 +221,7 @@ export function promptLooksVagueOrProductShaped(prompt: string): boolean {
   const words = prompt.split(/\s+/).filter(Boolean);
   const productSignal = /\b(improve|better|onboarding|activation|experience|flow|idea|explore|maybe|help users|make it easier|product|strategy|roadmap)\b/i.test(prompt);
   const concreteSignal = /\b(api|endpoint|database|schema|migration|test|bug|error|auth|cli|config|typescript|react|sql|cache|worker|specs?\/)\b/i.test(prompt);
-  return words.length < 8 || (productSignal && !concreteSignal);
+  return (words.length < 8 && !concreteSignal) || (productSignal && !concreteSignal);
 }
 
 export function resolveMode(promptInput: string, requestedMode: CompoundMode = "auto"): ResolvedCompoundMode {
@@ -258,7 +258,19 @@ export function parseApprovalDecision(input: unknown): ApprovalDecision {
 }
 
 function countSeverity(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function hasMalformedSeverityCount(value: unknown): boolean {
+  return value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < 0);
+}
+
+function hasMalformedSeverityCounts(counts: SeverityCounts | undefined): boolean {
+  if (counts === undefined) return false;
+  return hasMalformedSeverityCount(counts.p0)
+    || hasMalformedSeverityCount(counts.p1)
+    || hasMalformedSeverityCount(counts.p2)
+    || hasMalformedSeverityCount(counts.p3);
 }
 
 export function normalizeSeverityCounts(counts: SeverityCounts = {}): Required<SeverityCounts> {
@@ -283,6 +295,9 @@ export function reduceReviewEvidence(evidence: ReviewEvidence): ReviewEvidenceRe
   }
   if (evidence.conflicted === true) {
     return { decision: "needs_human", missing, severity_counts, reason: "Review evidence is conflicted and needs a human decision." };
+  }
+  if (hasMalformedSeverityCounts(evidence.severity_counts)) {
+    return { decision: "needs_human", missing, severity_counts, reason: "Review severity counts are malformed; p0/p1/p2/p3 must be non-negative integers." };
   }
   if (severity_counts.p0 > 0 || severity_counts.p1 > 0) {
     return { decision: "fixes_needed", missing, severity_counts, reason: "Blocking P0/P1 findings remain." };
@@ -382,9 +397,9 @@ export function buildChildHandoff(options: {
   const childPrompt = [
     `Implement the approved Compound Engineering plan/spec at ${options.approvedPath}. Original request: ${options.prompt}`,
     "",
-    "After implementation and your own internal review, emit a structured evidence block named `compound_engineering_evidence` in child outputs and/or the `review_report` artifact.",
-    "The block must reflect the child workflow's own implementation and internal review results; the parent will not fabricate missing evidence or run a duplicative supplemental review.",
-    "Use exactly this compact JSON-serializable shape:",
+    "After implementation and your own internal review, return only the child workflow's declared outputs and review artifacts. Do not rely on undeclared parent-specific child output keys.",
+    "Place structured review evidence in the declared `review_report`/`review_report_path` artifact when the runner supports it; Goal should also return status=complete only when done.",
+    "The artifact may include a compact JSON object named `review_evidence` with this JSON-serializable shape:",
     "{",
     "  independent: { satisfied: boolean, evidence?: string, source?: string },",
     "  acceptance_mapped: { satisfied: boolean, evidence?: string },",
