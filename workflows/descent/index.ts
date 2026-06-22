@@ -8,7 +8,8 @@
  * repo-local .descend/ state directory is used.
  */
 
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import type {
   WorkflowParallelOptions,
   WorkflowRunContext,
@@ -2563,78 +2564,63 @@ const ultimatesOutputSchema = Type.Unsafe<DescentWorkflowResult["ultimates"]>(
   }),
 );
 
-export default defineWorkflow("descent")
-  .description(
-    "Setup → implementor → validator → terminator optimization loop with prior-failure checks and anti-drift ultimates.",
-  )
-  .input(
-    "objective",
-    Type.String({
+export default workflow({
+  name: "descent",
+  description: "Setup → implementor → validator → terminator optimization loop with prior-failure checks and anti-drift ultimates.",
+  inputs: {
+    "objective": Type.String({
       description:
         "Goal, issue summary, task, or spec path for the descent optimization loop.",
     }),
-  )
-  .input(
-    "max_iterations",
-    Type.Number({
+    "max_iterations": Type.Number({
       default: DEFAULT_MAX_ITERATIONS,
       description:
         "Maximum implement/validate/terminate iterations before returning needs_human.",
     }),
-  )
-  .input(
-    "max_reject",
-    Type.Number({
+    "max_reject": Type.Number({
       default: DEFAULT_MAX_REJECT,
       description:
         "Consecutive rejected/error history threshold for stagnation, campaign, and radical-plan triggers; rejected/error mutating iterations stop for inspection.",
     }),
-  )
-  .input(
-    "history_observe",
-    Type.Number({
+    "history_observe": Type.Number({
       default: DEFAULT_HISTORY_OBSERVE,
       description:
         "Recent score-history window for plateau/decreasing-score stagnation and cascading-failure detection.",
     }),
-  )
-  .input(
-    "base_branch",
-    Type.String({
+    "base_branch": Type.String({
       default: DEFAULT_DESCENT_BASE_BRANCH,
       description:
         "Branch/ref used to create a missing reusable worktree and as the validator comparison base.",
     }),
-  )
-  .input(
-    "git_worktree_dir",
-    Type.String({
+    "git_worktree_dir": Type.String({
       default: "",
       description:
         "Optional reusable Git worktree root. Empty runs in the invoking checkout; non-empty values use Atomic's Ralph-style reusable worktree binding.",
     }),
-  )
-  .worktreeFromInputs({
+  },
+  worktreeFromInputs: {
     gitWorktreeDir: "git_worktree_dir",
     baseBranch: "base_branch",
-  })
-  .output("result", Type.String({ description: "Human-readable descent completion summary." }))
-  .output("status", descentStatusOutputSchema)
-  .output("converged", Type.Boolean({ description: "Whether descent converged successfully." }))
-  .output("objective", Type.String({ description: "Objective used for this descent run." }))
-  .output("iterations_completed", Type.Number({ description: "Number of primary implement/evaluate iterations completed." }))
-  .output("accepted_evaluations", Type.Number({ description: "Number of accepted evaluations across primary and post-ultimate phases." }))
-  .output("rejected_evaluations", Type.Number({ description: "Number of rejected or error evaluations across primary and post-ultimate phases." }))
-  .output("approved_iterations", Type.Number({ description: "Compatibility alias for accepted_evaluations." }))
-  .output("rejected_iterations", Type.Number({ description: "Compatibility alias for rejected_evaluations." }))
-  .output("final_score", Type.Number({ description: "Final weighted validator score." }))
-  .output("final_scores", axisScoresOutputSchema)
-  .output("history", historyOutputSchema)
-  .output("ultimates", ultimatesOutputSchema)
-  .output("review_report", Type.String({ description: "Validator report for the accepted/current evaluation, or fallback text." }))
-  .output("final_report", Type.String({ description: "Final detailed descent report." }))
-  .output("radical_plan", Type.Optional(radicalPlanOutputSchema))
-  .run(async (ctx) => {
+  },
+  outputs: {
+    "result": Type.String({ description: "Human-readable descent completion summary." }),
+    "status": descentStatusOutputSchema,
+    "converged": Type.Boolean({ description: "Whether descent converged successfully." }),
+    "objective": Type.String({ description: "Objective used for this descent run." }),
+    "iterations_completed": Type.Number({ description: "Number of primary implement/evaluate iterations completed." }),
+    "accepted_evaluations": Type.Number({ description: "Number of accepted evaluations across primary and post-ultimate phases." }),
+    "rejected_evaluations": Type.Number({ description: "Number of rejected or error evaluations across primary and post-ultimate phases." }),
+    "approved_iterations": Type.Number({ description: "Compatibility alias for accepted_evaluations." }),
+    "rejected_iterations": Type.Number({ description: "Compatibility alias for rejected_evaluations." }),
+    "final_score": Type.Number({ description: "Final weighted validator score." }),
+    "final_scores": axisScoresOutputSchema,
+    "history": historyOutputSchema,
+    "ultimates": ultimatesOutputSchema,
+    "review_report": Type.String({ description: "Validator report for the accepted/current evaluation, or fallback text." }),
+    "final_report": Type.String({ description: "Final detailed descent report." }),
+    "radical_plan": Type.Optional(radicalPlanOutputSchema),
+  },
+  run: async (ctx) => {
     const workflowCtx = ctx as WorkflowRunContext<DescentInputs>;
     const inputs = workflowCtx.inputs;
     const objective = (inputs.objective ?? "").trim();
@@ -2660,5 +2646,5 @@ export default defineWorkflow("descent")
       requestedGitWorktreeDir: inputs.git_worktree_dir,
       effectiveWorkflowCwd,
     });
-  })
-  .compile();
+  },
+});

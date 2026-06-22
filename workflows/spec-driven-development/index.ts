@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import { type TaskContext, renderTaskContexts } from "./helpers.ts";
 import { reportFilenameSummary } from "./report-output.js";
 import {
@@ -452,49 +453,54 @@ function researchFrontmatter(topic: string): string {
   ].join("\n");
 }
 
-export default defineWorkflow("spec-driven-development")
-  .description("Spec Driven Development wrapper: brainstorm/direct intake → research → spec → HIL approval → separate Ralph handoff; monitor follow-on Ralph with /workflow status/connect.")
-  .input("mode", Type.Union([
+export default workflow({
+  name: "spec-driven-development",
+  description: "Spec Driven Development wrapper: brainstorm/direct intake → research → spec → HIL approval → separate Ralph handoff; monitor follow-on Ralph with /workflow status/connect.",
+  inputs: {
+    "mode": Type.Union([
     Type.Literal("brainstorm"),
     Type.Literal("direct"),
     Type.Literal("auto"),
   ], {
     default: "auto",
     description: "brainstorm does silent triage, repo scout, focused clarification, and a compact brief; direct skips it; auto chooses based on prompt specificity.",
-  }))
-  .input("prompt", Type.String({
+  }),
+    "prompt": Type.String({
     description: "Feature idea, implementation intent, or problem statement to turn into an approved spec.",
-  }))
-  .input("max_loops", Type.Number({
+  }),
+    "max_loops": Type.Number({
     default: DEFAULT_MAX_LOOPS,
     description: "Maximum Ralph implementation loop count after spec approval. Used by the follow-on Ralph workflow; this workflow ends at handoff.",
-  }))
-  .output("status", Type.Union([
+  }),
+  },
+  outputs: {
+    "status": Type.Union([
     Type.Literal("approved-ready-for-ralph"),
     Type.Literal("rejected"),
     Type.Literal("stopped"),
-  ], { description: "Final spec-driven workflow status." }))
-  .output("mode", Type.Union([
+  ], { description: "Final spec-driven workflow status." }),
+    "mode": Type.Union([
     Type.Literal("brainstorm"),
     Type.Literal("direct"),
     Type.Literal("auto"),
-  ], { description: "Resolved intake mode used for the workflow run." }))
-  .output("brainstorm_brief_path", Type.Optional(Type.String({ description: "Path to the brainstorm brief when brainstorm mode produced one." })))
-  .output("research_path", Type.String({ description: "Path to the saved codebase research artifact." }))
-  .output("research_artifact_dir", Type.String({ description: "Per-run artifact directory containing intermediate research artifacts." }))
-  .output("research_manifest_path", Type.String({ description: "Path to the research artifact manifest JSON." }))
-  .output("spec_path", Type.String({ description: "Path to the generated spec document." }))
-  .output("approved_spec_path", Type.Optional(Type.String({ description: "Path to the approved spec when the review gate approved it." })))
-  .output("ralph_workflow", Type.Optional(Type.String({ description: "Follow-on workflow name to launch after approval." })))
-  .output("ralph_prompt", Type.Optional(Type.String({ description: "Prompt to pass to the follow-on Ralph workflow after approval." })))
-  .output("ralph_inputs", Type.Optional(Type.Object({
+  ], { description: "Resolved intake mode used for the workflow run." }),
+    "brainstorm_brief_path": Type.Optional(Type.String({ description: "Path to the brainstorm brief when brainstorm mode produced one." })),
+    "research_path": Type.String({ description: "Path to the saved codebase research artifact." }),
+    "research_artifact_dir": Type.String({ description: "Per-run artifact directory containing intermediate research artifacts." }),
+    "research_manifest_path": Type.String({ description: "Path to the research artifact manifest JSON." }),
+    "spec_path": Type.String({ description: "Path to the generated spec document." }),
+    "approved_spec_path": Type.Optional(Type.String({ description: "Path to the approved spec when the review gate approved it." })),
+    "ralph_workflow": Type.Optional(Type.String({ description: "Follow-on workflow name to launch after approval." })),
+    "ralph_prompt": Type.Optional(Type.String({ description: "Prompt to pass to the follow-on Ralph workflow after approval." })),
+    "ralph_inputs": Type.Optional(Type.Object({
     prompt: Type.String(),
     max_loops: Type.Number(),
-  }, { description: "Inputs to pass to the follow-on Ralph workflow after approval." })))
-  .output("ralph_command", Type.Optional(Type.String({ description: "Copyable command to launch the follow-on Ralph workflow after approval." })))
-  .output("max_loops", Type.Optional(Type.Number({ description: "Maximum Ralph implementation loop count requested for the follow-on workflow." })))
-  .output("message", Type.String({ description: "Human-readable completion or handoff message." }))
-  .run(async (ctx) => {
+  }, { description: "Inputs to pass to the follow-on Ralph workflow after approval." })),
+    "ralph_command": Type.Optional(Type.String({ description: "Copyable command to launch the follow-on Ralph workflow after approval." })),
+    "max_loops": Type.Optional(Type.Number({ description: "Maximum Ralph implementation loop count requested for the follow-on workflow." })),
+    "message": Type.String({ description: "Human-readable completion or handoff message." }),
+  },
+  run: async (ctx) => {
     const initialPrompt = text(ctx.inputs.prompt);
     const requestedMode = text(ctx.inputs.mode, "auto") as "brainstorm" | "direct" | "auto";
     const resolvedMode = requestedMode === "auto"
@@ -1240,5 +1246,5 @@ Output only the complete revised Markdown spec for ${specPath}; no code fences a
       max_loops: maxLoops,
       message: "Spec approved. Launch Ralph as a separate top-level workflow using ralph_workflow and ralph_inputs for full Ralph visibility/control. If a parent chat/agent auto-starts Ralph, check /workflow status for the new Ralph run, connect with /workflow connect <ralph-run-id> or F2, and read Ralph's active stage output for any tmux attach command.",
     };
-  })
-  .compile();
+  },
+});

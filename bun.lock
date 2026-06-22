@@ -5,12 +5,12 @@
     "": {
       "name": "atomic-workflows",
       "peerDependencies": {
-        "@bastani/atomic": "0.8.22",
-        "@bastani/workflows": "0.8.22",
+        "@bastani/atomic": ">=0.9.0",
+        "typebox": "*",
       },
       "optionalPeers": [
         "@bastani/atomic",
-        "@bastani/workflows",
+        "typebox",
       ],
     },
   },
