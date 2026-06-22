@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://docs.bastani.ai/"><img src="https://img.shields.io/badge/docs-atomic-blue" alt="Docs"></a>
-  <a href="https://github.com/flora131/atomic"><img src="https://img.shields.io/badge/original%20repo-Atomic-181717?logo=github&logoColor=white" alt="Original Atomic repo"></a>
+  <a href="https://github.com/bastani-inc/atomic"><img src="https://img.shields.io/badge/original%20repo-Atomic-181717?logo=github&logoColor=white" alt="Original Atomic repo"></a>
   <a href="https://discord.gg/9CvdXUGXR4"><img src="https://img.shields.io/badge/join%20community-discord-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   <a href="./package.json"><img src="https://img.shields.io/badge/TypeScript-6.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"></a>
   <a href="./package.json"><img src="https://img.shields.io/badge/Bun-Runtime-f9f1e1?logo=bun&logoColor=black" alt="Bun"></a>
@@ -32,7 +32,7 @@
 
 ---
 
-`atomic-workflows` is a small registry package for [Atomic](https://github.com/flora131/atomic). It ships TypeScript workflow definitions.
+`atomic-workflows` is a small registry package for [Atomic](https://github.com/bastani-inc/atomic). It ships TypeScript workflow definitions.
 
 The workflows here are concrete developer-job recipes for analysis, review, security validation, implementation planning, reporting, and workflow chaining. Some are intentionally read-only; others demonstrate how one workflow can hand off to another workflow for active implementation.
 
@@ -47,13 +47,13 @@ Use this repository out of the box to run focused code reviews, gate security ri
 Download/install the registry globally for your user:
 
 ```bash
-atomic install git:github.com/lavaman131/atomic-workflows
+atomic install git:github.com/bastani-inc/atomic-workflows
 ```
 
 Install locally for one project:
 
 ```bash
-atomic install git:github.com/lavaman131/atomic-workflows -l
+atomic install git:github.com/bastani-inc/atomic-workflows -l
 ```
 
 `-l` writes the package entry to project settings (`.atomic/settings.json`). Without `-l`, Atomic writes to user settings (`~/.atomic/agent/settings.json`).
@@ -63,10 +63,10 @@ atomic install git:github.com/lavaman131/atomic-workflows -l
 To update `atomic-workflows` without updating any other Atomic packages you have installed, run:
 
 ```bash
-atomic update git:github.com/lavaman131/atomic-workflows
+atomic update git:github.com/bastani-inc/atomic-workflows
 ```
 
-If you installed a pinned ref such as `git:github.com/lavaman131/atomic-workflows@v1.0.0`, Atomic skips it during package updates. Remove the ref or reinstall with an unpinned source to follow the latest version.
+If you installed a pinned ref such as `git:github.com/bastani-inc/atomic-workflows@v0.0.1`, Atomic skips it during package updates. Remove the ref or reinstall with an unpinned source to follow the latest version.
 
 ## Enable selected workflows only
 
@@ -81,15 +81,15 @@ For example, this configuration enables only `review-board` and `security-gate` 
 
 ```json
 {
-  "packages": [
-    {
-      "source": "git:github.com/lavaman131/atomic-workflows",
-      "workflows": [
-        "workflows/review-board/index.ts",
-        "workflows/security-gate/index.ts"
-      ]
-    }
-  ]
+    "packages": [
+        {
+            "source": "git:github.com/lavaman131/atomic-workflows",
+            "workflows": [
+                "workflows/review-board/index.ts",
+                "workflows/security-gate/index.ts"
+            ]
+        }
+    ]
 }
 ```
 

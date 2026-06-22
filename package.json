@@ -1,49 +1,49 @@
 {
-  "name": "atomic-workflows",
-  "version": "0.0.1",
-  "type": "module",
-  "description": "Installable workflow recipes for Atomic.",
-  "license": "SEE LICENSE IN LICENSE",
-  "scripts": {
-    "test": "bun test"
-  },
-  "keywords": [
-    "atomic-package",
-    "pi-package",
-    "atomic",
-    "workflows",
-    "ai",
-    "code-review",
-    "testing",
-    "security"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/lavaman131/atomic-workflows.git"
-  },
-  "atomic": {
-    "workflows": [
-      "./workflows/*/index.ts"
-    ]
-  },
-  "peerDependencies": {
-    "@bastani/atomic": ">=0.9.0",
-    "typebox": "*"
-  },
-  "peerDependenciesMeta": {
-    "@bastani/atomic": {
-      "optional": true
+    "name": "atomic-workflows",
+    "version": "0.1.0",
+    "type": "module",
+    "description": "Installable workflow recipes for Atomic.",
+    "license": "SEE LICENSE IN LICENSE",
+    "scripts": {
+        "test": "bun test"
     },
-    "typebox": {
-      "optional": true
-    }
-  },
-  "files": [
-    "README.md",
-    "LICENSE",
-    "assets/atomic-promo.gif",
-    "workflows/**/*.md",
-    "workflows/**/*.ts",
-    "!workflows/**/*.test.ts"
-  ]
+    "keywords": [
+        "atomic-package",
+        "pi-package",
+        "atomic",
+        "workflows",
+        "ai",
+        "code-review",
+        "testing",
+        "security"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/bastani-inc/atomic-workflows.git"
+    },
+    "atomic": {
+        "workflows": [
+            "./workflows/*/index.ts"
+        ]
+    },
+    "peerDependencies": {
+        "@bastani/atomic": ">=0.9.0",
+        "typebox": "*"
+    },
+    "peerDependenciesMeta": {
+        "@bastani/atomic": {
+            "optional": true
+        },
+        "typebox": {
+            "optional": true
+        }
+    },
+    "files": [
+        "README.md",
+        "LICENSE",
+        "assets/atomic-promo.gif",
+        "workflows/**/*.md",
+        "workflows/**/*.ts",
+        "!workflows/**/*.test.ts"
+    ]
 }
