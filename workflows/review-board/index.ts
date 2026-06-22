@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import { reportSummaryText, writeWorkflowReport } from "./report-output.js";
 import {
   createWorkflowArtifactRun,
@@ -48,22 +49,27 @@ function rolePrompt(role: ReviewerRole, focus: string): string {
   }
 }
 
-export default defineWorkflow(WORKFLOW_NAME)
-  .description("Run a full specialist review board and synthesize an evidence-backed code review without posting comments.")
-  .input("target", Type.String({
+export default workflow({
+  name: WORKFLOW_NAME,
+  description: "Run a full specialist review board and synthesize an evidence-backed code review without posting comments.",
+  inputs: {
+    "target": Type.String({
     description: "PR number/URL, branch, commit range, current diff, path, or repo.",
-  }))
-  .input("focus", Type.String({
+  }),
+    "focus": Type.String({
     default: "",
     description: "Optional review emphasis, risk area, subsystem, or reviewer guidance.",
-  }))
-  .output("summary", Type.String({ description: "Short summary of the saved review board report." }))
-  .output("report_path", Type.String({ description: "Path to the saved final review board report." }))
-  .output("filename_summary", Type.String({ description: "Short filename-safe topic summary used for the report." }))
-  .output("artifact_dir", Type.String({ description: "Per-run artifact directory containing intermediate review artifacts." }))
-  .output("manifest_path", Type.String({ description: "Path to the workflow artifact manifest JSON." }))
-  .output("stages", Type.Array(Type.String(), { description: "Stage names completed during the review board run." }))
-  .run(async (ctx) => {
+  }),
+  },
+  outputs: {
+    "summary": Type.String({ description: "Short summary of the saved review board report." }),
+    "report_path": Type.String({ description: "Path to the saved final review board report." }),
+    "filename_summary": Type.String({ description: "Short filename-safe topic summary used for the report." }),
+    "artifact_dir": Type.String({ description: "Per-run artifact directory containing intermediate review artifacts." }),
+    "manifest_path": Type.String({ description: "Path to the workflow artifact manifest JSON." }),
+    "stages": Type.Array(Type.String(), { description: "Stage names completed during the review board run." }),
+  },
+  run: async (ctx) => {
     const targetInput = text(ctx.inputs.target, "repo");
     const focus = text(ctx.inputs.focus);
     const startedAt = new Date();
@@ -176,5 +182,5 @@ export default defineWorkflow(WORKFLOW_NAME)
         reportSummary.stageName,
       ],
     };
-  })
-  .compile();
+  },
+});

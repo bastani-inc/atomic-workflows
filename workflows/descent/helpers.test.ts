@@ -61,58 +61,31 @@ const Type = {
 };
 
 mock.module("@bastani/workflows", () => ({
-  Type,
-  defineWorkflow(name: string) {
-    const state: {
-      description: string;
-      inputs: Record<string, MockSchema>;
-      outputs: Record<string, MockSchema>;
-      inputBindings: { worktree?: MockWorktreeBinding };
-      run?: unknown;
-    } = {
-      description: "",
-      inputs: {},
-      outputs: {},
-      inputBindings: {},
-    };
-
-    const builder = {
-      description(text: string) {
-        state.description = text;
-        return builder;
-      },
-      input(key: string, schema: MockSchema) {
-        state.inputs[key] = schema;
-        return builder;
-      },
-      output(key: string, schema: MockSchema) {
-        state.outputs[key] = schema;
-        return builder;
-      },
-      worktreeFromInputs(binding: MockWorktreeBinding) {
-        state.inputBindings.worktree = { ...binding };
-        return builder;
-      },
-      run(fn: unknown) {
-        state.run = fn;
-        return builder;
-      },
-      compile() {
-        return Object.freeze({
-          __piWorkflow: true,
-          name,
-          description: state.description,
-          inputs: Object.freeze({ ...state.inputs }),
-          outputs: Object.freeze({ ...state.outputs }),
-          inputBindings: Object.freeze({ ...state.inputBindings }),
-          run: state.run,
-        });
-      },
-    };
-
-    return builder;
+  workflow(options: {
+    name: string;
+    description: string;
+    inputs: Record<string, MockSchema>;
+    outputs: Record<string, MockSchema>;
+    worktreeFromInputs?: MockWorktreeBinding;
+    run?: unknown;
+  }) {
+    return Object.freeze({
+      __piWorkflow: true,
+      name: options.name,
+      description: options.description,
+      inputs: Object.freeze({ ...options.inputs }),
+      outputs: Object.freeze({ ...options.outputs }),
+      inputBindings: Object.freeze(
+        options.worktreeFromInputs
+          ? { worktree: { ...options.worktreeFromInputs } }
+          : {},
+      ),
+      run: options.run,
+    });
   },
 }));
+
+mock.module("typebox", () => ({ Type }));
 
 const descentModulePromise = import("./index.ts");
 const descentWorkflowPromise = descentModulePromise.then((module) => module.default);
@@ -244,16 +217,17 @@ describe("descent helpers", () => {
     ]);
   });
 
-  test("descent workflow source uses v0.8.22 schemas and runtime worktree binding without production setup", () => {
+  test("descent workflow source uses current workflow object schemas and runtime worktree binding without production setup", () => {
     const source = descentSource();
-    expect(source).toContain('import { defineWorkflow, Type } from "@bastani/workflows";');
-    expect(source).toMatch(/\.input\(\s*"base_branch",\s*Type\.String/);
+    expect(source).toContain('import { workflow } from "@bastani/workflows";');
+    expect(source).toContain('import { Type } from "typebox";');
+    expect(source).toMatch(/"base_branch":\s*Type\.String/);
     expect(source).toContain('default: DEFAULT_DESCENT_BASE_BRANCH');
-    expect(source).toMatch(/\.input\(\s*"git_worktree_dir",\s*Type\.String/);
-    expect(source).toContain('.output("result", Type.String');
-    expect(source).toContain('.output("radical_plan", Type.Optional');
+    expect(source).toMatch(/"git_worktree_dir":\s*Type\.String/);
+    expect(source).toContain('"result": Type.String');
+    expect(source).toContain('"radical_plan": Type.Optional');
     expect(source).not.toContain('required: true');
-    expect(source).toContain('.worktreeFromInputs({');
+    expect(source).toContain('worktreeFromInputs: {');
     expect(source).toContain('gitWorktreeDir: "git_worktree_dir"');
     expect(source).toContain('baseBranch: "base_branch"');
     expect(source).not.toContain("setupGitWorktree");

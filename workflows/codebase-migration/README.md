@@ -105,4 +105,4 @@ Large handoffs stay path-based: Ralph prompts and the final report stage referen
 
 When non-empty `git_worktree_dir` is requested, `ctx.cwd` must be inside the parent-bound Git checkout/worktree so `git rev-parse --show-toplevel` can derive the effective absolute root shared by deep research and Ralph.
 
-Reusable-worktree mode also fails fast before research if the installed `deep-research-codebase` cannot bind its internal stages to the same checkout/worktree. The error names `deep-research-codebase`, `git_worktree_dir`, and `worktreeFromInputs`/`inputBindings.worktree`; upgrade `@bastani/workflows` to a build with this contract or run with empty `git_worktree_dir`.
+Reusable-worktree mode also fails fast before research if the installed `deep-research-codebase` cannot bind its internal stages to the same checkout/worktree. The error names `deep-research-codebase`, `git_worktree_dir`, and `worktreeFromInputs`/`inputBindings.worktree`; upgrade Atomic's workflow runtime to a build with this contract or run with empty `git_worktree_dir`.

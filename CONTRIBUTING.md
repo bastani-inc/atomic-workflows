@@ -18,7 +18,7 @@ Recommended structure:
 
 ```text
 workflows/<workflow-name>/
-  index.ts      # defineWorkflow entrypoint discovered by the package manifest
+  index.ts      # workflow({ ... }) entrypoint discovered by the package manifest
   README.md     # user-facing usage, posture, inputs, stages, and outputs
   helpers.ts    # optional workflow-local helpers
 ```

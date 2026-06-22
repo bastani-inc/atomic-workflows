@@ -84,58 +84,31 @@ function setMockDeepResearchContract(options: {
 }
 
 mock.module("@bastani/workflows", () => ({
-  Type,
-  defineWorkflow(name: string) {
-    const state: {
-      description: string;
-      inputs: Record<string, MockSchema>;
-      outputs: Record<string, MockSchema>;
-      inputBindings: { worktree?: MockWorktreeBinding };
-      run?: unknown;
-    } = {
-      description: "",
-      inputs: {},
-      outputs: {},
-      inputBindings: {},
-    };
-
-    const builder = {
-      description(text: string) {
-        state.description = text;
-        return builder;
-      },
-      input(key: string, schema: MockSchema) {
-        state.inputs[key] = schema;
-        return builder;
-      },
-      output(key: string, schema: MockSchema) {
-        state.outputs[key] = schema;
-        return builder;
-      },
-      worktreeFromInputs(binding: MockWorktreeBinding) {
-        state.inputBindings.worktree = { ...binding };
-        return builder;
-      },
-      run(fn: unknown) {
-        state.run = fn;
-        return builder;
-      },
-      compile() {
-        return Object.freeze({
-          __piWorkflow: true,
-          name,
-          description: state.description,
-          inputs: Object.freeze({ ...state.inputs }),
-          outputs: Object.freeze({ ...state.outputs }),
-          inputBindings: Object.freeze({ ...state.inputBindings }),
-          run: state.run,
-        });
-      },
-    };
-
-    return builder;
+  workflow(options: {
+    name: string;
+    description: string;
+    inputs: Record<string, MockSchema>;
+    outputs: Record<string, MockSchema>;
+    worktreeFromInputs?: MockWorktreeBinding;
+    run?: unknown;
+  }) {
+    return Object.freeze({
+      __piWorkflow: true,
+      name: options.name,
+      description: options.description,
+      inputs: Object.freeze({ ...options.inputs }),
+      outputs: Object.freeze({ ...options.outputs }),
+      inputBindings: Object.freeze(
+        options.worktreeFromInputs
+          ? { worktree: { ...options.worktreeFromInputs } }
+          : {},
+      ),
+      run: options.run,
+    });
   },
 }));
+
+mock.module("typebox", () => ({ Type }));
 
 mock.module("@bastani/workflows/builtin", () => ({
   deepResearchCodebase: mockDeepResearchCodebase,

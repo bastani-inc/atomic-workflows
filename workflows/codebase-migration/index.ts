@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import { deepResearchCodebase, ralph } from "@bastani/workflows/builtin";
 import {
   DEFAULT_BASE_BRANCH,
@@ -275,7 +276,7 @@ function requireDeepResearchWorktreeInputs(options: {
     throw new Error(
       "codebase-migration reusable-worktree mode requires deep-research-codebase to declare git_worktree_dir "
         + "and bind it with worktreeFromInputs/inputBindings.worktree so research agents inspect the same checkout that Ralph edits. "
-        + "The installed deep-research-codebase cannot guarantee worktree locality. Upgrade @bastani/workflows or run with empty git_worktree_dir.",
+        + "The installed deep-research-codebase cannot guarantee worktree locality. Upgrade Atomic's workflow runtime or run with empty git_worktree_dir.",
     );
   }
 
@@ -303,49 +304,54 @@ function reportReadPaths(
   ].map((path) => text(path)).filter((path) => path.length > 0);
 }
 
-export default defineWorkflow(WORKFLOW_NAME)
-  .description("Research and execute a large legacy-to-target-stack migration through deep-research-codebase plus two Ralph passes, then save a final handoff report.")
-  .input("migration_request", Type.String({
+export default workflow({
+  name: WORKFLOW_NAME,
+  description: "Research and execute a large legacy-to-target-stack migration through deep-research-codebase plus two Ralph passes, then save a final handoff report.",
+  inputs: {
+    "migration_request": Type.String({
     description: "Migration spec path or free-form migration prompt. Required and treated as the invariant charter for all stages.",
-  }))
-  .input("base_branch", Type.String({
+  }),
+    "base_branch": Type.String({
     default: DEFAULT_BASE_BRANCH,
     description: "Branch/ref used for Ralph review comparison and reusable worktree creation.",
-  }))
-  .input("git_worktree_dir", Type.String({
+  }),
+    "git_worktree_dir": Type.String({
     default: "",
     description: "Optional reusable Git worktree path. Empty runs in the invoking checkout; non-empty values use Atomic's Ralph-style reusable worktree binding.",
-  }))
-  .input("max_research_concurrency", Type.Number({
+  }),
+    "max_research_concurrency": Type.Number({
     default: DEFAULT_MAX_RESEARCH_CONCURRENCY,
     description: "How many research tasks can run at once. Higher can finish faster but uses more compute/API capacity.",
-  }))
-  .input("max_research_partitions", Type.Number({
+  }),
+    "max_research_partitions": Type.Number({
     default: DEFAULT_MAX_RESEARCH_PARTITIONS,
     description: "Maximum codebase partitions explored by the deep research phase.",
-  }))
-  .input("max_translation_loops", Type.Number({
+  }),
+    "max_translation_loops": Type.Number({
     default: DEFAULT_MAX_TRANSLATION_LOOPS,
     description: "How many times Atomic may try to complete the initial code translation before stopping.",
-  }))
-  .input("max_idiomatic_loops", Type.Number({
+  }),
+    "max_idiomatic_loops": Type.Number({
     default: DEFAULT_MAX_IDIOMATIC_LOOPS,
     description: "How many times Atomic may refine the translated code for cleaner, more idiomatic results.",
-  }))
-  .worktreeFromInputs({
+  }),
+  },
+  worktreeFromInputs: {
     gitWorktreeDir: "git_worktree_dir",
     baseBranch: "base_branch",
-  })
-  .output("result", Type.String({ description: "Final migration summary and next steps." }))
-  .output("migration_report_path", Type.String({ description: "Path to the final developer-facing migration handoff report." }))
-  .output("research_doc_path", Type.String({ description: "Path to the deep research report used for implementation." }))
-  .output("research_artifact_dir", Type.Optional(Type.String({ description: "Deep research artifact directory when returned." })))
-  .output("research_manifest_path", Type.Optional(Type.String({ description: "Deep research manifest path when returned." })))
-  .output("literal_translation", ralphOutputSchema)
-  .output("idiomatic_cleanup", ralphOutputSchema)
-  .output("approved", Type.Optional(Type.Boolean({ description: "Whether the final idiomatic Ralph pass was approved." })))
-  .output("worktree_dir", Type.String({ description: "Effective shared worktree root used by deep research and Ralph when reusable-worktree mode is active, or empty when the invoking checkout was used." }))
-  .run(async (ctx) => {
+  },
+  outputs: {
+    "result": Type.String({ description: "Final migration summary and next steps." }),
+    "migration_report_path": Type.String({ description: "Path to the final developer-facing migration handoff report." }),
+    "research_doc_path": Type.String({ description: "Path to the deep research report used for implementation." }),
+    "research_artifact_dir": Type.Optional(Type.String({ description: "Deep research artifact directory when returned." })),
+    "research_manifest_path": Type.Optional(Type.String({ description: "Deep research manifest path when returned." })),
+    "literal_translation": ralphOutputSchema,
+    "idiomatic_cleanup": ralphOutputSchema,
+    "approved": Type.Optional(Type.Boolean({ description: "Whether the final idiomatic Ralph pass was approved." })),
+    "worktree_dir": Type.String({ description: "Effective shared worktree root used by deep research and Ralph when reusable-worktree mode is active, or empty when the invoking checkout was used." }),
+  },
+  run: async (ctx) => {
     const cwd = (ctx as { cwd?: string }).cwd ?? process.cwd();
     const migrationRequest = text(ctx.inputs.migration_request);
     if (migrationRequest.length === 0) {
@@ -460,5 +466,5 @@ export default defineWorkflow(WORKFLOW_NAME)
     }
 
     return workflowOutputs;
-  })
-  .compile();
+  },
+});
