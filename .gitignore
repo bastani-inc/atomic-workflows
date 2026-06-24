@@ -6,9 +6,11 @@ research/
 /docs/brainstorms/
 /specs/
 
+/babysit-pr/
 /review-board/
 /security-gate/
 
+/.babysit-pr-*/
 /.review-board-*/
 /.security-gate-*/
 /.spec-driven-development-research-*/
