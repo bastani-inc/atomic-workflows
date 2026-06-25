@@ -99,7 +99,7 @@ Use workflow paths relative to the package root, such as `workflows/review-board
 
 These workflows are provided by this registry package after installation. See [`workflows/README.md`](./workflows/README.md) for the current workflow index, details, and settings filter examples.
 
-- `babysit-pr`: bounded PR shepherding through review feedback, inline threads, mergeability, and observed CI (empty checks are not green) with hard `poll_timeout` sleep caps, known-head, parseable-receipt, exact raw Git porcelain parsing, no-shell remediation children, clean-workspace/selective-staging, all-push-URL validation, and a single `push_pr_fixes` branch-mutation chokepoint.
+- `babysit-pr`: bounded PR shepherding through review feedback, inline threads, mergeability, and observed CI (empty checks are not green) with a structured preflight classifier before checkout, hard `poll_timeout` sleep caps, known-head, parseable receipts, trusted shell-capable remediation that can run tests/package scripts/git/gh only when routed, clean-workspace checks, and post-remediation PR-state syncing/reporting.
 - `review-board`: read-only multi-specialist review synthesis.
 - `security-gate`: read-only local security risk gate.
 - `descent`, `codebase-migration`, and `spec-driven-development`: implementation, migration, and spec workflow recipes.

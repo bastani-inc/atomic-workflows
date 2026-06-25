@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, mkdir, readFile } from "node:fs/promises";
 import { relative, resolve, sep, join } from "node:path";
 import { promisify } from "node:util";
 import { workflow } from "@bastani/workflows";
@@ -15,6 +14,7 @@ import {
   type CommentSignal,
   type GitStatusEntry,
   type LoopDecision,
+  type PreflightDecision,
   type PullRequestIdentity,
   type PullRequestState,
   type RemediationReceipt,
@@ -23,6 +23,7 @@ import {
   aggregateChecks,
   mergeRequiredAndAllChecks,
   classifyPrReadiness,
+  classifyPreflightDecision,
   collectReceiptOwnedPaths,
   normalizeBaseBranchInput,
   normalizeBoundedInteger,
@@ -30,14 +31,12 @@ import {
   normalizePullRequestLifecycleState,
   normalizeRequestedGitWorktreeDir,
   normalizeReviewThreadNodes,
-  parseGitHubRemoteUrl,
   parseGitStatusPorcelain,
   parsePullRequestRef,
   parseRemediationReceiptContent,
   redactCommandOutput,
   validateReceiptAddressedCommentSignalIds,
   validateRemediationReceiptOutcome,
-  remediationReceiptPaths,
   remainingItemsForState,
   resolveHeadRepositoryIdentity,
 } from "./helpers.js";
@@ -73,25 +72,6 @@ type CommitReceipt = {
   readonly parentSha: string;
 };
 
-type PushTarget =
-  | {
-    readonly kind: "remote";
-    readonly branch: string;
-    readonly repo: string;
-    readonly remoteName: string;
-    readonly validatedPushUrls: readonly string[];
-    readonly redactedPushUrls: readonly string[];
-    readonly source: string;
-  }
-  | {
-    readonly kind: "direct_url";
-    readonly branch: string;
-    readonly repo: string;
-    readonly validatedPushUrl: string;
-    readonly redactedPushUrl: string;
-    readonly source: string;
-  };
-
 type PushReceipt = {
   readonly target: string;
   readonly branch: string;
@@ -107,8 +87,6 @@ type IterationLedger = {
   readonly ciArtifact: string;
   readonly remediationArtifact?: string;
   readonly receiptArtifact?: string;
-  readonly ownedPathsArtifact?: string;
-  readonly pushTargetArtifact?: string;
   readonly commit?: CommitReceipt;
   readonly push?: PushReceipt;
 };
@@ -176,19 +154,6 @@ async function git(args: readonly string[], cwd: string): Promise<string> {
 
 async function gitRaw(args: readonly string[], cwd: string): Promise<string> {
   return commandRaw("git", args, cwd);
-}
-
-async function disabledHooksPath(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "atomic-babysit-pr-disabled-hooks-"));
-}
-
-async function gitWithLocalAutomationDisabled(args: readonly string[], cwd: string): Promise<string> {
-  const hooksPath = await disabledHooksPath();
-  try {
-    return await git(["-c", `core.hooksPath=${hooksPath}`, "-c", "commit.gpgSign=false", ...args], cwd);
-  } finally {
-    await rm(hooksPath, { recursive: true, force: true });
-  }
 }
 
 async function gh(args: readonly string[], cwd: string): Promise<string> {
@@ -511,12 +476,31 @@ function workflowOwnedRoots(cwd: string, artifactDir: string): readonly string[]
     .filter((root) => root.length > 0 && root !== ".."))];
 }
 
-async function guardCleanWorkspace(cwd: string, artifactDir: string): Promise<void> {
+async function nonWorkflowWorkspaceStatus(cwd: string, artifactDir: string): Promise<WorkspaceStatusEntry[]> {
   const ownedRoots = workflowOwnedRoots(cwd, artifactDir);
-  const dirty = (await workspaceStatus(cwd)).filter((entry) => !isWorkflowOwnedPath(entry.path, ownedRoots));
+  return (await workspaceStatus(cwd)).filter((entry) => !isWorkflowOwnedPath(entry.path, ownedRoots));
+}
+
+async function guardCleanWorkspace(cwd: string, artifactDir: string): Promise<void> {
+  const dirty = await nonWorkflowWorkspaceStatus(cwd, artifactDir);
   if (dirty.length > 0) {
     throw new Error(`Workspace has pre-existing changes outside workflow artifacts: ${dirty.map((entry) => entry.path).join(", ")}`);
   }
+}
+
+async function stashPreExistingWorkspaceChanges(cwd: string, artifactDir: string, message: string): Promise<readonly string[]> {
+  const dirty = await nonWorkflowWorkspaceStatus(cwd, artifactDir);
+  const paths = [...new Set(dirty.map((entry) => entry.path))].sort();
+  if (paths.length === 0) return [];
+  await git(["stash", "push", "--include-untracked", "-m", message, "--", ...paths], cwd);
+  return paths;
+}
+
+async function validateReceiptOwnedWorkspace(cwd: string, artifactDir: string, receipt: RemediationReceipt): Promise<void> {
+  const dirty = await nonWorkflowWorkspaceStatus(cwd, artifactDir);
+  if (dirty.length === 0) return;
+  const ownership = collectReceiptOwnedPaths(dirty, receipt);
+  if (!ownership.ok) throw new Error(`validate_receipt_owned_workspace rejected dirty remediation changes: ${ownership.error}`);
 }
 
 async function parseRemediationReceipt(remediationPath: string): Promise<RemediationReceipt> {
@@ -525,34 +509,6 @@ async function parseRemediationReceipt(remediationPath: string): Promise<Remedia
     throw new Error(`parse_remediation_receipt rejected the remediation output: ${parsed.error}`);
   }
   return parsed.receipt;
-}
-
-async function collectOwnedRemediationPaths(cwd: string, artifactDir: string, receipt: RemediationReceipt): Promise<readonly string[]> {
-  const ownedRoots = workflowOwnedRoots(cwd, artifactDir);
-  const receiptArtifactPaths = remediationReceiptPaths(receipt).filter((path) => isWorkflowOwnedPath(path, ownedRoots));
-  if (receiptArtifactPaths.length > 0) {
-    throw new Error(`collect_owned_remediation_paths refused receipt paths under workflow artifacts/reports: ${receiptArtifactPaths.join(", ")}`);
-  }
-
-  for (const change of receipt.changed_files) {
-    if (change.change !== "copy") continue;
-    try {
-      await access(resolve(cwd, change.old_path));
-    } catch {
-      throw new Error(`collect_owned_remediation_paths refused copy receipt because old_path does not exist: ${change.old_path}`);
-    }
-  }
-
-  const entries = (await workspaceStatus(cwd)).filter((entry) => !isWorkflowOwnedPath(entry.path, ownedRoots));
-  const collected = collectReceiptOwnedPaths(entries, receipt);
-  if (!collected.ok) {
-    throw new Error(`collect_owned_remediation_paths rejected the remediation diff: ${collected.error}`);
-  }
-  return collected.paths;
-}
-
-async function stagedPaths(cwd: string): Promise<readonly string[]> {
-  return (await gitRaw(["diff", "--cached", "--name-only", "-z"], cwd)).split("\0").filter(Boolean);
 }
 
 async function verifyLocalHeadMatchesPrHead(cwd: string, state: PullRequestState, context: string): Promise<string> {
@@ -566,254 +522,6 @@ async function verifyLocalHeadMatchesPrHead(cwd: string, state: PullRequestState
   return currentHead;
 }
 
-async function commitPrFixes(cwd: string, iteration: number, ownedPaths: readonly string[], expectedParentHead: string): Promise<CommitReceipt | undefined> {
-  const currentHead = await git(["rev-parse", "HEAD"], cwd);
-  if (currentHead !== expectedParentHead) {
-    throw new Error(`commit_pr_fixes refused to continue because HEAD changed from ${expectedParentHead} to ${currentHead} before parent-owned staging.`);
-  }
-  if (ownedPaths.length === 0) return undefined;
-  const message = `fix: address PR feedback iteration ${iteration}`;
-  const parentSha = currentHead;
-  await git(["reset", "--"], cwd);
-  await git(["add", "--", ...ownedPaths], cwd);
-  const staged = await stagedPaths(cwd);
-  const stagedOutsideOwnedPaths = staged.filter((path) => !ownedPaths.includes(path));
-  if (stagedOutsideOwnedPaths.length > 0) {
-    throw new Error(`commit_pr_fixes refused to commit staged paths outside remediation ownership: ${stagedOutsideOwnedPaths.join(", ")}`);
-  }
-  try {
-    await git(["diff", "--cached", "--quiet", "--", ...ownedPaths], cwd);
-    return undefined;
-  } catch {
-    // Non-zero means there is a staged diff to commit.
-  }
-  const expectedTree = await git(["write-tree"], cwd);
-  await gitWithLocalAutomationDisabled(["commit", "--no-verify", "-m", message], cwd);
-  const sha = await git(["rev-parse", "HEAD"], cwd);
-  const actualParentSha = await git(["rev-parse", "HEAD^"], cwd);
-  if (actualParentSha !== parentSha) {
-    throw new Error(`commit_pr_fixes refused the parent-owned commit because its parent ${actualParentSha} does not match ${parentSha}.`);
-  }
-  const actualTree = await git(["rev-parse", "HEAD^{tree}"], cwd);
-  if (actualTree !== expectedTree) {
-    throw new Error("commit_pr_fixes refused the parent-owned commit because its tree differs from the selectively staged remediation tree.");
-  }
-  const shortSha = await git(["rev-parse", "--short", "HEAD"], cwd);
-  return { sha, shortSha, message, parentSha };
-}
-
-function remoteMatchesRepo(remoteUrl: string | undefined, repo: string): boolean {
-  const parsed = parseGitHubRemoteUrl(remoteUrl);
-  return parsed !== undefined && `${parsed.owner}/${parsed.repo}`.toLowerCase() === repo.toLowerCase();
-}
-
-async function remotePushUrls(cwd: string, remote: string): Promise<readonly string[]> {
-  try {
-    return (await gitRaw(["remote", "get-url", "--push", "--all", remote], cwd))
-      .split(/\r?\n/)
-      .map((pushUrl) => pushUrl.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-async function gitRemotes(cwd: string): Promise<readonly { readonly name: string; readonly pushUrls: readonly string[] }[]> {
-  const names = (await git(["remote"], cwd)).split(/\r?\n/).map((name) => name.trim()).filter(Boolean);
-  const remotes = [] as { name: string; pushUrls: readonly string[] }[];
-  for (const name of names) {
-    const pushUrls = await remotePushUrls(cwd, name);
-    if (pushUrls.length > 0) remotes.push({ name, pushUrls });
-  }
-  return remotes;
-}
-
-function requireKnownHeadRepository(state: PullRequestState): string {
-  if (state.head_repository.kind === "unknown") {
-    throw new Error(`UnknownHeadRepository: ${state.head_repository.reason}`);
-  }
-  return state.head_repository.full_name;
-}
-
-async function repoCloneUrl(repo: string, cwd: string): Promise<string | undefined> {
-  try {
-    const view = await ghJson<Record<string, unknown>>(["repo", "view", repo, "--json", "sshUrl,url"], cwd);
-    const sshUrl = text(view.sshUrl);
-    if (remoteMatchesRepo(sshUrl, repo)) return sshUrl;
-    const url = text(view.url);
-    if (remoteMatchesRepo(url, repo)) return url;
-  } catch {
-    return undefined;
-  }
-  return undefined;
-}
-
-function hasUrlCredentials(value: string): boolean {
-  if (!/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) return false;
-  try {
-    const url = new URL(value);
-    return url.username.length > 0 || url.password.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-function safeRemoteName(value: string): boolean {
-  return /^(?!-)[A-Za-z0-9._-]+$/.test(value) && !hasUrlCredentials(value);
-}
-
-function pushTargetFromRemote(remoteName: string, pushUrls: readonly string[], branch: string, repo: string): PushTarget | undefined {
-  if (!safeRemoteName(remoteName) || !allPushUrlsMatchRepo(pushUrls, repo)) return undefined;
-  return {
-    kind: "remote",
-    branch,
-    repo,
-    remoteName,
-    validatedPushUrls: [...pushUrls],
-    redactedPushUrls: pushUrls.map((pushUrl) => redactCommandOutput(pushUrl)),
-    source: remoteName,
-  };
-}
-
-function pushTargetFromUrl(pushUrl: string, branch: string, repo: string, source: string): PushTarget | undefined {
-  if (hasUrlCredentials(pushUrl) || !remoteMatchesRepo(pushUrl, repo)) return undefined;
-  return {
-    kind: "direct_url",
-    branch,
-    repo,
-    validatedPushUrl: pushUrl,
-    redactedPushUrl: redactCommandOutput(pushUrl),
-    source,
-  };
-}
-
-function allPushUrlsMatchRepo(pushUrls: readonly string[], repo: string): boolean {
-  return pushUrls.length > 0 && pushUrls.every((pushUrl) => remoteMatchesRepo(pushUrl, repo));
-}
-
-async function resolvePushTarget(cwd: string, state: PullRequestState): Promise<PushTarget> {
-  if (state.lifecycle_state !== "OPEN") {
-    throw new Error(`resolve_push_target refused to push because the PR lifecycle state is ${state.lifecycle_state}.`);
-  }
-  if (!state.head_ref) {
-    throw new Error("resolve_push_target refused to push because the PR head branch is unknown.");
-  }
-
-  const headRepo = requireKnownHeadRepository(state);
-  const remotes = await gitRemotes(cwd);
-  const origin = remotes.find((remote) => remote.name === "origin");
-  if (origin) {
-    const target = pushTargetFromRemote(origin.name, origin.pushUrls, state.head_ref, headRepo);
-    if (target) return target;
-  }
-
-  for (const remote of remotes) {
-    if (remote.name === "origin") continue;
-    const target = pushTargetFromRemote(remote.name, remote.pushUrls, state.head_ref, headRepo);
-    if (target) return target;
-  }
-
-  const directUrl = await repoCloneUrl(headRepo, cwd);
-  const target = directUrl ? pushTargetFromUrl(directUrl, state.head_ref, headRepo, "gh repo view") : undefined;
-  if (target) return target;
-
-  throw new Error("resolve_push_target could not find a validated credential-safe push target for the PR head repository.");
-}
-
-async function pushDryRun(cwd: string, target: PushTarget): Promise<void> {
-  const refspec = `HEAD:refs/heads/${target.branch}`;
-  if (target.kind === "remote") {
-    const currentPushUrls = await remotePushUrls(cwd, target.remoteName);
-    if (!safeRemoteName(target.remoteName) || !allPushUrlsMatchRepo(currentPushUrls, target.repo)) {
-      throw new Error("confirm_push_access refused because the validated remote no longer matches the PR head repository.");
-    }
-    await gitWithLocalAutomationDisabled(["push", "--dry-run", "--porcelain", "--no-verify", target.remoteName, refspec], cwd);
-    return;
-  }
-
-  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(target.validatedPushUrl)) {
-    throw new Error("confirm_push_access refused to preflight an owner/repo slug instead of a real remote URL.");
-  }
-  if (hasUrlCredentials(target.validatedPushUrl)) {
-    throw new Error("confirm_push_access refused to put a credential-bearing URL in git push argv.");
-  }
-  if (!remoteMatchesRepo(target.validatedPushUrl, target.repo)) {
-    throw new Error("confirm_push_access refused because the single validated push URL no longer validates against the PR head repository.");
-  }
-  await gitWithLocalAutomationDisabled(["push", "--dry-run", "--porcelain", "--no-verify", target.validatedPushUrl, refspec], cwd);
-}
-
-async function confirmPushAccessForPrHead(cwd: string, state: PullRequestState): Promise<PushTarget> {
-  await verifyLocalHeadMatchesPrHead(cwd, state, "confirmPushAccessForPrHead");
-  const target = await resolvePushTarget(cwd, state);
-  await pushDryRun(cwd, target);
-  return target;
-}
-
-function redactedPushTargetArtifact(target: PushTarget): Record<string, unknown> {
-  if (target.kind === "remote") {
-    return {
-      kind: target.kind,
-      branch: target.branch,
-      repo: target.repo,
-      remoteName: target.remoteName,
-      redactedPushUrls: target.redactedPushUrls,
-      source: target.source,
-    };
-  }
-  return {
-    kind: target.kind,
-    branch: target.branch,
-    repo: target.repo,
-    redactedPushUrl: target.redactedPushUrl,
-    source: target.source,
-  };
-}
-
-async function push_pr_fixes(cwd: string, state: PullRequestState, commit: CommitReceipt, target: PushTarget): Promise<PushReceipt> {
-  if (state.lifecycle_state !== "OPEN") {
-    throw new Error(`push_pr_fixes refused to push because the PR lifecycle state is ${state.lifecycle_state}.`);
-  }
-  if (!state.head_ref) {
-    throw new Error("push_pr_fixes refused to push because the PR head branch is unknown.");
-  }
-  if (commit.parentSha !== state.head_sha) {
-    throw new Error(`push_pr_fixes refused to push because commit parent ${commit.parentSha} does not match latest observed PR headRefOid ${state.head_sha}.`);
-  }
-  const currentHead = await git(["rev-parse", "HEAD"], cwd);
-  if (currentHead !== commit.sha) {
-    throw new Error(`push_pr_fixes refused to push because local HEAD ${currentHead} is not the parent-owned remediation commit ${commit.sha}.`);
-  }
-  const headRepo = requireKnownHeadRepository(state);
-  if (state.push_accessible !== true) {
-    throw new Error("push_pr_fixes refused to push because push access was not confirmed.");
-  }
-  if (target.branch !== state.head_ref || target.repo.toLowerCase() !== headRepo.toLowerCase()) {
-    throw new Error("push_pr_fixes refused to push because the resolved target no longer matches the PR head.");
-  }
-
-  if (target.kind === "remote") {
-    const currentPushUrls = await remotePushUrls(cwd, target.remoteName);
-    if (!safeRemoteName(target.remoteName) || !allPushUrlsMatchRepo(currentPushUrls, target.repo)) {
-      throw new Error("push_pr_fixes refused to push because the validated remote no longer matches the PR head repository.");
-    }
-    await gitWithLocalAutomationDisabled(["push", "--no-verify", target.remoteName, `HEAD:refs/heads/${target.branch}`], cwd);
-    return { target: target.remoteName, branch: target.branch, commit: commit.sha };
-  }
-
-  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(target.validatedPushUrl)) {
-    throw new Error("push_pr_fixes refused to push to an owner/repo slug instead of a real remote URL.");
-  }
-  if (hasUrlCredentials(target.validatedPushUrl)) {
-    throw new Error("push_pr_fixes refused to put a credential-bearing URL in git push argv.");
-  }
-  if (!remoteMatchesRepo(target.validatedPushUrl, target.repo)) {
-    throw new Error("push_pr_fixes refused to push because the single validated push URL no longer validates against the PR head repository.");
-  }
-
-  await gitWithLocalAutomationDisabled(["push", "--no-verify", target.validatedPushUrl, `HEAD:refs/heads/${target.branch}`], cwd);
-  return { target: target.redactedPushUrl, branch: target.branch, commit: commit.sha };
-}
 
 async function syncAfterPush(
   identity: PullRequestIdentity,
@@ -882,6 +590,14 @@ function finalStatusFromDecision(decision: LoopDecision): BabysitLedger["status"
   }
 }
 
+function preflightNeedsCheckout(decision: PreflightDecision): boolean {
+  return decision.action === "fix_failure" || decision.action === "respond_to_review";
+}
+
+function preflightSummary(decision: PreflightDecision): string {
+  return `preflight action=${decision.action}; next_stage=${decision.next_stage}; stop_reason=${decision.stop_reason}`;
+}
+
 function renderFinalReport(ledger: BabysitLedger): string {
   const lines = [
     `# babysit-pr report`,
@@ -910,17 +626,15 @@ function renderFinalReport(ledger: BabysitLedger): string {
     );
     if (entry.remediationArtifact) lines.push(`- Remediation artifact: ${displayPath(entry.remediationArtifact)}`);
     if (entry.receiptArtifact) lines.push(`- Remediation receipt: ${displayPath(entry.receiptArtifact)}`);
-    if (entry.ownedPathsArtifact) lines.push(`- Owned paths: ${displayPath(entry.ownedPathsArtifact)}`);
-    if (entry.pushTargetArtifact) lines.push(`- Push target: ${displayPath(entry.pushTargetArtifact)}`);
     if (entry.commit) lines.push(`- Commit: ${entry.commit.shortSha} (${entry.commit.message})`);
     if (entry.push) lines.push(`- Pushed: ${entry.push.commit} to ${entry.push.target}/${entry.push.branch}`);
   }
 
   lines.push(
     "",
-    "## Safety posture",
-    "- No merge, close, approve, force-push, review-thread marking, or PR comment action was attempted.",
-    "- Remote branch mutation is isolated to the `push_pr_fixes` helper.",
+    "## Trusted remediation posture",
+    "- The remediation stage is trusted with shell access and may run tests, package scripts, git, and gh using local credentials.",
+    "- The parent workflow observes trusted remediation output, records receipts, syncs PR state, and reports remaining work.",
   );
 
   return lines.join("\n");
@@ -997,7 +711,25 @@ export default workflow({
       startedAt: startedAt.toISOString(),
     });
 
+    const preflightDecisionPath = jsonArtifact(artifactDir, "00-preflight-decision.json");
+    const writePreflightDecision = async (name: string, path: string, decision: PreflightDecision): Promise<void> => {
+      await writeRegisteredJsonArtifact(name, path, decision);
+    };
+
     if (!(await ghAuthAvailable(workflowCwd))) {
+      const authDecision: PreflightDecision = {
+        action: "ask_human",
+        confidence: "high",
+        evidence: [`PR ${prUrl}`, "GitHub CLI authentication is unavailable."],
+        next_stage: "human",
+        commands_run: ["gh auth status --hostname github.com"],
+        stop_reason: "GitHub CLI auth is required before observing PR state; stop preflight and ask a human to authenticate.",
+        local_validation: "not_run_not_needed",
+        loop_decision: { kind: "needs_human", reason: "GitHub CLI authentication is unavailable.", remaining: ["GitHub CLI authentication is unavailable."] },
+      };
+      await writePreflightDecision("preflight-decision", preflightDecisionPath, authDecision);
+      await ctx.stage("babysit-pr-preflight").complete(preflightSummary(authDecision));
+      stages.push("babysit-pr-preflight");
       const report = await writeWorkflowReport({
         workflowName: WORKFLOW_NAME,
         summary: "needs human github auth",
@@ -1031,84 +763,202 @@ export default workflow({
       };
     }
 
+    let shouldCheckoutAndRemediate = false;
     try {
-      await guardCleanWorkspace(workflowCwd, artifactDir);
-      stages.push("pre-checkout-guard-clean-workspace");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      stages.push("pre-checkout-guard-clean-workspace-failed");
-      const report = await writeWorkflowReport({
-        workflowName: WORKFLOW_NAME,
-        summary: "needs human pre-checkout dirty workspace",
-        cwd: workflowCwd,
-        report: `# babysit-pr report\n\nStatus: needs_human\nPR: ${prUrl}\n\nUnable to checkout the PR branch because the workspace is not clean outside workflow-owned artifacts.\n\n\`\`\`text\n${message}\n\`\`\``,
-      });
-      const manifestPath = join(artifactDir, "manifest.json");
-      await writeWorkflowManifest(manifestPath, {
-        runId,
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        input: recordedInput,
-        finalStatus: "needs_human",
-        pr: parsed.identity,
-        commitsPushed: [],
-        finalReportPath: displayPath(report.reportPath),
-        artifacts: manifestArtifactPaths(artifactPathsByName, manifestPath),
-      });
-      return {
-        summary: "needs human pre-checkout dirty workspace",
-        status: "needs_human",
-        pr_url: prUrl,
+      const preflightStateJsonPath = jsonArtifact(artifactDir, "00-preflight-pr-state.json");
+      const preflightStateMarkdownPath = markdownArtifact(artifactDir, "00-preflight-pr-state.md");
+      const preflightCiPath = jsonArtifact(artifactDir, "00-preflight-ci-state.json");
+      let preflightState = withAddressedCommentSignals(await fetchPrState(parsed.identity, workflowCwd), new Set<string>());
+      prUrl = preflightState.url;
+      lastHeadRepository = preflightState.head_repository;
+      let preflightLoopDecision = classifyPrReadiness(preflightState, {
         iterations_completed: 0,
-        commits_pushed: [],
-        remaining_items: [message],
-        report_path: report.reportPath,
-        filename_summary: report.filenameSummary,
-        artifact_dir: displayPath(artifactDir),
-        manifest_path: displayPath(manifestPath),
-        stages,
+        max_iterations: maxIterations,
+        consecutive_no_progress: 0,
+      });
+      let preflightDecision = classifyPreflightDecision(preflightState, preflightLoopDecision, {
+        commands_run: [
+          "gh auth status --hostname github.com",
+          "gh pr view --json url,number,state,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,maintainerCanModify,reviewDecision,latestReviews,comments,statusCheckRollup,mergeable,mergeStateStatus",
+          "gh pr checks --required --json name,state,bucket,link,startedAt,completedAt,workflow",
+          "gh pr checks --json name,state,bucket,link,startedAt,completedAt,workflow",
+          "gh api graphql reviewThreads",
+        ],
+      });
+      await writeRegisteredJsonArtifact("preflight-pr-state-json", preflightStateJsonPath, preflightState);
+      await writeRegisteredJsonArtifact("preflight-ci-state", preflightCiPath, preflightState.checks);
+      await writePreflightDecision("preflight-decision", preflightDecisionPath, preflightDecision);
+      await writeRegisteredMarkdownArtifact("preflight-pr-state", preflightStateMarkdownPath, markdownPrState(preflightState, preflightLoopDecision));
+      await ctx.stage("babysit-pr-preflight").complete(preflightSummary(preflightDecision));
+      stages.push("babysit-pr-preflight");
+
+      if (preflightDecision.action === "wait_for_ci") {
+        const postCiStateJsonPath = jsonArtifact(artifactDir, "00-preflight-post-ci-pr-state.json");
+        const postCiStateMarkdownPath = markdownArtifact(artifactDir, "00-preflight-post-ci-pr-state.md");
+        const postCiDecisionPath = jsonArtifact(artifactDir, "00-preflight-post-ci-decision.json");
+        preflightState = withAddressedCommentSignals(await waitForCiToSettle(parsed.identity, preflightState, workflowCwd, pollInterval, pollTimeout), new Set<string>());
+        prUrl = preflightState.url;
+        lastHeadRepository = preflightState.head_repository;
+        preflightLoopDecision = classifyPrReadiness(preflightState, {
+          iterations_completed: 0,
+          max_iterations: maxIterations,
+          consecutive_no_progress: 0,
+        });
+        preflightDecision = classifyPreflightDecision(preflightState, preflightLoopDecision, {
+          commands_run: ["bounded CI poll via gh pr view/checks until checks settle or poll_timeout expires"],
+        });
+        await writeRegisteredJsonArtifact("preflight-post-ci-pr-state-json", postCiStateJsonPath, preflightState);
+        await writePreflightDecision("preflight-post-ci-decision", postCiDecisionPath, preflightDecision);
+        await writeRegisteredMarkdownArtifact("preflight-post-ci-pr-state", postCiStateMarkdownPath, markdownPrState(preflightState, preflightLoopDecision));
+        await ctx.stage("babysit-pr-ci-poll").complete(preflightSummary(preflightDecision));
+        stages.push("babysit-pr-ci-poll");
+      }
+
+      if (preflightNeedsCheckout(preflightDecision)) {
+        shouldCheckoutAndRemediate = true;
+      } else {
+        status = finalStatusFromDecision(preflightLoopDecision);
+        remainingItems = "remaining" in preflightLoopDecision ? preflightLoopDecision.remaining : remainingItemsForState(preflightState);
+      }
+    } catch (error) {
+      const message = redactCommandOutput(error instanceof Error ? error.message : String(error));
+      const syncDecision: PreflightDecision = {
+        action: "ask_human",
+        confidence: "high",
+        evidence: [`PR ${prUrl}`, `GitHub/CLI preflight sync failed: ${message}`],
+        next_stage: "human",
+        commands_run: ["gh pr view/checks/reviewThreads"],
+        stop_reason: "Preflight could not fetch the required PR state; stop instead of falling back to local inspection.",
+        local_validation: "not_run_not_needed",
+        loop_decision: { kind: "needs_human", reason: "Preflight PR state sync failed.", remaining: [`GitHub/CLI preflight sync failed: ${message}`] },
       };
+      await writePreflightDecision("preflight-decision", preflightDecisionPath, syncDecision);
+      await ctx.stage("babysit-pr-preflight").complete(preflightSummary(syncDecision));
+      stages.push("babysit-pr-preflight");
+      status = "needs_human";
+      remainingItems = syncDecision.loop_decision.remaining;
     }
 
-    try {
-      await checkoutPrBranch(parsed.identity, workflowCwd);
-      stages.push("checkout-pr-branch");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const report = await writeWorkflowReport({
-        workflowName: WORKFLOW_NAME,
-        summary: "needs human checkout pr branch",
-        cwd: workflowCwd,
-        report: `# babysit-pr report\n\nStatus: needs_human\nPR: ${prUrl}\n\nUnable to checkout the PR branch safely.\n\n\`\`\`text\n${message}\n\`\`\``,
-      });
-      const manifestPath = join(artifactDir, "manifest.json");
-      await writeWorkflowManifest(manifestPath, {
-        runId,
-        startedAt: startedAt.toISOString(),
-        completedAt: new Date().toISOString(),
-        input: recordedInput,
-        finalStatus: "needs_human",
-        pr: parsed.identity,
-        commitsPushed: [],
-        finalReportPath: displayPath(report.reportPath),
-        artifacts: manifestArtifactPaths(artifactPathsByName, manifestPath),
-      });
-      return {
-        summary: "needs human checkout pr branch",
-        status: "needs_human",
-        pr_url: prUrl,
-        iterations_completed: 0,
-        commits_pushed: [],
-        remaining_items: [`Unable to checkout PR branch: ${message}`],
-        report_path: report.reportPath,
-        filename_summary: report.filenameSummary,
-        artifact_dir: displayPath(artifactDir),
-        manifest_path: displayPath(manifestPath),
-        stages,
-      };
-    }
+    if (shouldCheckoutAndRemediate) {
+      try {
+        const stashedPaths = await stashPreExistingWorkspaceChanges(workflowCwd, artifactDir, `babysit-pr pre-checkout safety stash for ${prUrl}`);
+        stages.push(stashedPaths.length > 0 ? "pre-checkout-stash-dirty-workspace" : "pre-checkout-guard-clean-workspace");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        stages.push("pre-checkout-stash-dirty-workspace-failed");
+        const report = await writeWorkflowReport({
+          workflowName: WORKFLOW_NAME,
+          summary: "needs human pre-checkout dirty workspace stash failed",
+          cwd: workflowCwd,
+          report: `# babysit-pr report\n\nStatus: needs_human\nPR: ${prUrl}\n\nUnable to safely stash pre-existing workspace changes before checking out the PR branch.\n\n\`\`\`text\n${message}\n\`\`\``,
+        });
+        const manifestPath = join(artifactDir, "manifest.json");
+        await writeWorkflowManifest(manifestPath, {
+          runId,
+          startedAt: startedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          input: recordedInput,
+          finalStatus: "needs_human",
+          pr: parsed.identity,
+          commitsPushed: [],
+          finalReportPath: displayPath(report.reportPath),
+          artifacts: manifestArtifactPaths(artifactPathsByName, manifestPath),
+        });
+        return {
+          summary: "needs human pre-checkout dirty workspace stash failed",
+          status: "needs_human",
+          pr_url: prUrl,
+          iterations_completed: 0,
+          commits_pushed: [],
+          remaining_items: [message],
+          report_path: report.reportPath,
+          filename_summary: report.filenameSummary,
+          artifact_dir: displayPath(artifactDir),
+          manifest_path: displayPath(manifestPath),
+          stages,
+        };
+      }
 
-    let consecutiveNoProgress = 0;
+      try {
+        await checkoutPrBranch(parsed.identity, workflowCwd);
+        stages.push("checkout-pr-branch");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const report = await writeWorkflowReport({
+          workflowName: WORKFLOW_NAME,
+          summary: "needs human checkout pr branch",
+          cwd: workflowCwd,
+          report: `# babysit-pr report\n\nStatus: needs_human\nPR: ${prUrl}\n\nUnable to checkout the PR branch safely.\n\n\`\`\`text\n${message}\n\`\`\``,
+        });
+        const manifestPath = join(artifactDir, "manifest.json");
+        await writeWorkflowManifest(manifestPath, {
+          runId,
+          startedAt: startedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          input: recordedInput,
+          finalStatus: "needs_human",
+          pr: parsed.identity,
+          commitsPushed: [],
+          finalReportPath: displayPath(report.reportPath),
+          artifacts: manifestArtifactPaths(artifactPathsByName, manifestPath),
+        });
+        return {
+          summary: "needs human checkout pr branch",
+          status: "needs_human",
+          pr_url: prUrl,
+          iterations_completed: 0,
+          commits_pushed: [],
+          remaining_items: [`Unable to checkout PR branch: ${message}`],
+          report_path: report.reportPath,
+          filename_summary: report.filenameSummary,
+          artifact_dir: displayPath(artifactDir),
+          manifest_path: displayPath(manifestPath),
+          stages,
+        };
+      }
+
+      try {
+        const checkoutState = await fetchPrState(parsed.identity, workflowCwd);
+        prUrl = checkoutState.url;
+        lastHeadRepository = checkoutState.head_repository;
+        await verifyLocalHeadMatchesPrHead(workflowCwd, checkoutState, "verifyLocalHeadMatchesPrHead after PR checkout");
+        stages.push("verify-local-head-pr-head-after-checkout");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const report = await writeWorkflowReport({
+          workflowName: WORKFLOW_NAME,
+          summary: "needs human checkout head mismatch",
+          cwd: workflowCwd,
+          report: `# babysit-pr report\n\nStatus: needs_human\nPR: ${prUrl}\n\nThe PR checkout did not match the latest GitHub headRefOid, so remediation was not started.\n\n\`\`\`text\n${message}\n\`\`\``,
+        });
+        const manifestPath = join(artifactDir, "manifest.json");
+        await writeWorkflowManifest(manifestPath, {
+          runId,
+          startedAt: startedAt.toISOString(),
+          completedAt: new Date().toISOString(),
+          input: recordedInput,
+          finalStatus: "needs_human",
+          pr: parsed.identity,
+          commitsPushed: [],
+          finalReportPath: displayPath(report.reportPath),
+          artifacts: manifestArtifactPaths(artifactPathsByName, manifestPath),
+        });
+        return {
+          summary: "needs human checkout head mismatch",
+          status: "needs_human",
+          pr_url: prUrl,
+          iterations_completed: 0,
+          commits_pushed: [],
+          remaining_items: [`PR checkout/headRefOid mismatch: ${message}`],
+          report_path: report.reportPath,
+          filename_summary: report.filenameSummary,
+          artifact_dir: displayPath(artifactDir),
+          manifest_path: displayPath(manifestPath),
+          stages,
+        };
+      }
+
+      let consecutiveNoProgress = 0;
     const addressedCommentSignalIds = new Set<string>();
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       const iterationDir = join(artifactDir, `iteration-${String(iteration).padStart(2, "0")}`);
@@ -1195,29 +1045,20 @@ export default workflow({
 
       const remediationPath = markdownArtifact(iterationDir, "remediation.md");
       const remediationReceiptPath = jsonArtifact(iterationDir, "remediation-receipt.json");
-      const ownedPathsPath = jsonArtifact(iterationDir, "owned-paths.json");
-      const pushTargetPath = jsonArtifact(iterationDir, "push-target.json");
       let remediationArtifact: string | undefined;
       let receiptArtifact: string | undefined;
-      let ownedPathsArtifact: string | undefined;
-      let pushTargetArtifact: string | undefined;
-      let pushTarget: PushTarget;
       let parentHeadBeforeRemediation: string;
       try {
-        parentHeadBeforeRemediation = await verifyLocalHeadMatchesPrHead(workflowCwd, prState, "verifyLocalHeadMatchesPrHead before remediation");
+        parentHeadBeforeRemediation = await verifyLocalHeadMatchesPrHead(workflowCwd, prState, "verifyLocalHeadMatchesPrHead before trusted remediation");
         stages.push(`verify-local-head-pr-head-before-remediation-${iteration}`);
-        pushTarget = await confirmPushAccessForPrHead(workflowCwd, prState);
-        pushTargetArtifact = await writeRegisteredJsonArtifact(`iteration-${iteration}-push-target`, pushTargetPath, redactedPushTargetArtifact(pushTarget));
-        prState = { ...prState, push_accessible: true };
-        stages.push(`confirm-push-access-for-pr-head-${iteration}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         decision = {
           kind: "needs_human",
-          reason: "Push access could not be confirmed before remediation.",
+          reason: "Local checkout did not match the observed PR head before trusted remediation.",
           remaining: [...remainingItemsForState(prState), message],
         };
-        iterations.push({ ...ledgerEntry, decision, pushTargetArtifact });
+        iterations.push({ ...ledgerEntry, decision });
         status = "needs_human";
         remainingItems = decision.remaining;
         break;
@@ -1226,12 +1067,17 @@ export default workflow({
       try {
         const remediation = await ctx.task(`remediate-pr-iteration-${iteration}`, {
           reads: [stateJsonPath, ciJsonPath, stateMarkdownPath],
-          prompt: `Apply one bounded remediation pass for this GitHub PR.\n\nRead the artifacts:\n- PR state: ${displayPath(stateJsonPath)}\n- PR state summary: ${displayPath(stateMarkdownPath)}\n- CI state: ${displayPath(ciJsonPath)}\n\nAddress only actionable review feedback and failing CI for the current OPEN PR state. You may edit files, but this remediation stage has no shell access; the parent workflow owns validation, commits, and pushes. Do not run git commit, git push, git reset, git rebase, branch rewrites, force pushes, merges, or anything that changes HEAD/history. Do not merge, close, approve, resolve review threads, post comments, call GitHub mutating APIs, submit reviews, update PR metadata, or mutate GitHub state in any way. If feedback is ambiguous, unsafe, or unfixable, leave code untouched and explain why. End with a final marker line \`FINAL_REMEDIATION_RECEIPT:\` followed by a machine-checkable remediation receipt as raw JSON or a fenced json block with this schema: {"changed_files":[{"path":"src/foo.ts","change":"modify"}],"tests_run":[{"command":"not run - no shell access","result":"skipped"}],"residual_items":[],"addressed_comment_signal_ids":["comment-... or review-..."]}. Rename/copy entries must use old_path and new_path. The optional addressed_comment_signal_ids array is only for top-level PR comment or review-summary comment_signal IDs from the PR state that you actually addressed in this pass; do not include inline review thread IDs, unknown IDs, non-actionable IDs, or previously addressed IDs. Omit addressed_comment_signal_ids or use [] when no top-level comment/review-summary signal was addressed.`,
+          prompt: `Apply one trusted remediation pass for this GitHub PR.
+
+Read the artifacts:
+- PR state: ${displayPath(stateJsonPath)}
+- PR state summary: ${displayPath(stateMarkdownPath)}
+- CI state: ${displayPath(ciJsonPath)}
+
+Address actionable review feedback, requested-change review threads, merge conflicts, and failing CI for the current OPEN PR state. Use senior-engineer judgment: research the codebase against each PR comment, apply changes that are relevant and important to resolve, and prefer small idiomatic fixes over superficial appeasement. This remediation stage is trusted and has shell access similar to running Claude Code with --dangerously-skip-permissions: you may run local commands, tests, typechecks, builds, package scripts, git, and gh using the credentials available in this checkout. You may edit files, resolve merge conflicts, create commits, push to the PR branch, update PR title/body or other PR metadata, and reply to or resolve review threads when that is the appropriate way to address the feedback. Do not merge or close the PR; avoid force-pushes unless the repository's normal workflow explicitly requires them and you can explain why. If feedback is ambiguous, unsafe, or unfixable, leave the repository in a clean state and explain why. End with a final marker line \`FINAL_REMEDIATION_RECEIPT:\` followed by a machine-checkable remediation receipt as raw JSON or a fenced json block with this schema: {"changed_files":[{"path":"src/foo.ts","change":"modify"}],"tests_run":[{"command":"bun test","result":"passed"}],"residual_items":[],"addressed_comment_signal_ids":["comment-... or review-..."]}. Rename/copy entries must use old_path and new_path. The optional addressed_comment_signal_ids array is only for top-level PR comment or review-summary comment_signal IDs from the PR state that you actually addressed in this pass; do not include inline review thread IDs, unknown IDs, non-actionable IDs, or previously addressed IDs. Omit addressed_comment_signal_ids or use [] when no top-level comment/review-summary signal was addressed.`,
           output: remediationPath,
           outputMode: FILE_ONLY_OUTPUT,
-          tools: ["read", "edit", "write"],
-          noTools: "builtin",
-          mcp: { deny: ["*"] },
+          tools: ["read", "edit", "write", "bash"],
         });
         await access(remediationPath);
         remediationArtifact = addArtifact(`iteration-${iteration}-remediation`, remediationPath);
@@ -1240,43 +1086,33 @@ export default workflow({
         const message = redactCommandOutput(error instanceof Error ? error.message : String(error));
         decision = {
           kind: "needs_human",
-          reason: "Remediation child failed before the receipt gate.",
+          reason: "Trusted remediation failed before the receipt gate.",
           remaining: [...remainingItemsForState(prState), message],
         };
-        iterations.push({ ...ledgerEntry, decision, remediationArtifact, pushTargetArtifact });
+        iterations.push({ ...ledgerEntry, decision, remediationArtifact });
         status = "needs_human";
         remainingItems = decision.remaining;
         break;
       }
 
+      let parentHeadAfterRemediation: string;
       try {
-        const parentHeadAfterRemediation = await git(["rev-parse", "HEAD"], workflowCwd);
-        if (parentHeadAfterRemediation !== parentHeadBeforeRemediation) {
-          decision = {
-            kind: "needs_human",
-            reason: "Remediation child changed git HEAD before the receipt gate; refusing to parse, stage, commit, or push.",
-            remaining: [...remainingItemsForState(prState), `HEAD changed from ${parentHeadBeforeRemediation} to ${parentHeadAfterRemediation}`],
-          };
-          iterations.push({ ...ledgerEntry, decision, remediationArtifact, pushTargetArtifact });
-          status = "needs_human";
-          remainingItems = decision.remaining;
-          break;
-        }
+        parentHeadAfterRemediation = await git(["rev-parse", "HEAD"], workflowCwd);
+        stages.push(`observe-trusted-remediation-head-${iteration}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         decision = {
           kind: "needs_human",
-          reason: "Unable to verify remediation child left git HEAD unchanged.",
+          reason: "Unable to observe repository HEAD after trusted remediation.",
           remaining: [...remainingItemsForState(prState), message],
         };
-        iterations.push({ ...ledgerEntry, decision, remediationArtifact, pushTargetArtifact });
+        iterations.push({ ...ledgerEntry, decision, remediationArtifact });
         status = "needs_human";
         remainingItems = decision.remaining;
         break;
       }
 
       let remediationReceipt: RemediationReceipt;
-      let ownedRemediationPaths: readonly string[];
       let validatedAddressedCommentSignalIds: readonly string[] = [];
       try {
         remediationReceipt = await parseRemediationReceipt(remediationPath);
@@ -1293,83 +1129,55 @@ export default workflow({
         }
         validatedAddressedCommentSignalIds = addressedValidation.addressed_comment_signal_ids;
         stages.push(`validate-receipt-addressed-comment-signal-ids-${iteration}`);
-        ownedRemediationPaths = await collectOwnedRemediationPaths(workflowCwd, artifactDir, remediationReceipt);
-        ownedPathsArtifact = await writeRegisteredJsonArtifact(`iteration-${iteration}-owned-paths`, ownedPathsPath, { paths: ownedRemediationPaths });
-        stages.push(`collect-owned-remediation-paths-${iteration}`);
+        await validateReceiptOwnedWorkspace(workflowCwd, artifactDir, remediationReceipt);
+        stages.push(`trusted-remediation-left-clean-or-receipt-owned-workspace-${iteration}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const receiptBlockedState = {
           ...prState,
           blockers: [...(prState.blockers ?? []), message],
         } satisfies PullRequestState;
-        decision = { kind: "needs_human", reason: "Remediation receipt or selective ownership validation failed.", remaining: remainingItemsForState(receiptBlockedState) };
-        iterations.push({ ...ledgerEntry, decision, remediationArtifact, receiptArtifact, ownedPathsArtifact, pushTargetArtifact });
+        decision = { kind: "needs_human", reason: "Trusted remediation receipt validation or clean-workspace check failed.", remaining: remainingItemsForState(receiptBlockedState) };
+        iterations.push({ ...ledgerEntry, decision, remediationArtifact, receiptArtifact });
         status = "needs_human";
         remainingItems = decision.remaining;
         break;
       }
 
-      let commit: CommitReceipt | undefined;
-      try {
-        await verifyLocalHeadMatchesPrHead(workflowCwd, prState, "verifyLocalHeadMatchesPrHead before commit");
-        stages.push(`verify-local-head-pr-head-before-commit-${iteration}`);
-        commit = await commitPrFixes(workflowCwd, iteration, ownedRemediationPaths, prState.head_sha);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const commitBlockedState = {
-          ...prState,
-          blockers: [...(prState.blockers ?? []), `commit_pr_fixes failed: ${message}`],
-        } satisfies PullRequestState;
-        decision = { kind: "needs_human", reason: "Selective staging or commit safety failed.", remaining: remainingItemsForState(commitBlockedState) };
-        iterations.push({ ...ledgerEntry, decision, remediationArtifact, receiptArtifact, ownedPathsArtifact, pushTargetArtifact });
-        status = "needs_human";
-        remainingItems = decision.remaining;
-        break;
-      }
-
-      if (!commit) {
-        consecutiveNoProgress += 1;
-        decision = classifyPrReadiness(prState, {
-          iterations_completed: iteration,
-          max_iterations: maxIterations,
-          consecutive_no_progress: consecutiveNoProgress,
-        });
-        iterations.push({ ...ledgerEntry, decision, remediationArtifact, receiptArtifact, ownedPathsArtifact, pushTargetArtifact });
-        status = finalStatusFromDecision(decision);
-        remainingItems = "remaining" in decision ? decision.remaining : remainingItemsForState(prState);
-        break;
-      }
-
-      let push: PushReceipt;
-      try {
-        push = await push_pr_fixes(workflowCwd, prState, commit, pushTarget);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const pushBlockedState = {
-          ...prState,
-          non_fast_forward: true,
-          blockers: [...(prState.blockers ?? []), `push_pr_fixes failed: ${message}`],
-        } satisfies PullRequestState;
-        decision = classifyPrReadiness(pushBlockedState, {
-          iterations_completed: iteration,
-          max_iterations: maxIterations,
-        });
-        iterations.push({ ...ledgerEntry, decision, remediationArtifact, receiptArtifact, ownedPathsArtifact, pushTargetArtifact, commit });
-        status = finalStatusFromDecision(decision);
-        remainingItems = "remaining" in decision ? decision.remaining : remainingItemsForState(pushBlockedState);
-        break;
-      }
-
-      commitsPushed.push(commit.sha);
       markReceiptCommentSignalsAddressed(validatedAddressedCommentSignalIds, addressedCommentSignalIds);
-      stages.push(`push-pr-fixes-${iteration}`);
+
+      const trustedHeadChanged = parentHeadAfterRemediation !== parentHeadBeforeRemediation;
+      const trustedCommit: CommitReceipt | undefined = trustedHeadChanged
+        ? {
+          sha: parentHeadAfterRemediation,
+          shortSha: parentHeadAfterRemediation.slice(0, 12),
+          message: "trusted remediation commit(s)",
+          parentSha: parentHeadBeforeRemediation,
+        }
+        : undefined;
+      let trustedPush: PushReceipt | undefined;
 
       const postPushStateJsonPath = jsonArtifact(iterationDir, "post-push-pr-state.json");
       const postPushStateMarkdownPath = markdownArtifact(iterationDir, "post-push-pr-state.md");
       let postPushState: PullRequestState;
       let postPushDecision: LoopDecision;
       try {
-        postPushState = withAddressedCommentSignals(await syncAfterPush(parsed.identity, commit.sha, workflowCwd, pollInterval, pollTimeout), addressedCommentSignalIds);
+        if (trustedHeadChanged) {
+          postPushState = withAddressedCommentSignals(await syncAfterPush(parsed.identity, parentHeadAfterRemediation, workflowCwd, pollInterval, pollTimeout), addressedCommentSignalIds);
+          trustedPush = {
+            target: "trusted remediator",
+            branch: postPushState.head_ref || prState.head_ref || "unknown",
+            commit: parentHeadAfterRemediation,
+          };
+          commitsPushed.push(parentHeadAfterRemediation);
+          stages.push(`sync-after-trusted-remediation-push-${iteration}`);
+        } else {
+          postPushState = withAddressedCommentSignals(await fetchPrState(parsed.identity, workflowCwd), addressedCommentSignalIds);
+          if (postPushState.lifecycle_state === "OPEN") {
+            postPushState = withAddressedCommentSignals(await waitForCiToSettle(parsed.identity, postPushState, workflowCwd, pollInterval, pollTimeout), addressedCommentSignalIds);
+          }
+          stages.push(`sync-after-trusted-remediation-${iteration}`);
+        }
         prUrl = postPushState.url;
         lastHeadRepository = postPushState.head_repository;
         postPushDecision = classifyPrReadiness(postPushState, {
@@ -1378,34 +1186,33 @@ export default workflow({
         });
         await writeRegisteredJsonArtifact(`iteration-${iteration}-post-push-pr-state-json`, postPushStateJsonPath, postPushState);
         await writeRegisteredMarkdownArtifact(`iteration-${iteration}-post-push-pr-state`, postPushStateMarkdownPath, markdownPrState(postPushState, postPushDecision));
-        stages.push(`sync-after-push-${iteration}`);
       } catch (error) {
         const message = redactCommandOutput(error instanceof Error ? error.message : String(error));
         postPushDecision = {
           kind: "needs_human",
-          reason: "Post-push sync failed after a successful push.",
-          remaining: [`Pushed commit ${commit.sha}, but post-push sync failed: ${message}`],
+          reason: "Post-remediation sync failed after trusted remediation completed.",
+          remaining: [`Trusted remediation completed at local HEAD ${parentHeadAfterRemediation}, but post-remediation sync failed: ${message}`],
         };
-        await writeRegisteredJsonArtifact(`iteration-${iteration}-post-push-pr-state-json`, postPushStateJsonPath, { error: message, pushedCommit: commit.sha });
+        await writeRegisteredJsonArtifact(`iteration-${iteration}-post-push-pr-state-json`, postPushStateJsonPath, { error: message, trustedRemediationHead: parentHeadAfterRemediation });
         await writeRegisteredMarkdownArtifact(`iteration-${iteration}-post-push-pr-state`, postPushStateMarkdownPath, [
-          `# Post-push sync failed for ${prUrl}`,
+          `# Post-remediation sync failed for ${prUrl}`,
           "",
-          `Pushed commit: ${commit.sha}`,
+          `Trusted remediation HEAD: ${parentHeadAfterRemediation}`,
           "",
           "```text",
           message,
           "```",
         ].join("\n"));
-        stages.push(`sync-after-push-failed-${iteration}`);
-        iterations.push({ ...ledgerEntry, decision: postPushDecision, remediationArtifact, receiptArtifact, ownedPathsArtifact, pushTargetArtifact, commit, push });
+        stages.push(`sync-after-trusted-remediation-failed-${iteration}`);
+        iterations.push({ ...ledgerEntry, decision: postPushDecision, remediationArtifact, receiptArtifact, commit: trustedCommit, push: trustedPush });
         status = "needs_human";
         remainingItems = postPushDecision.remaining;
         break;
       }
 
-      iterations.push({ ...ledgerEntry, decision: postPushDecision, remediationArtifact, receiptArtifact, ownedPathsArtifact, pushTargetArtifact, commit, push });
+      iterations.push({ ...ledgerEntry, decision: postPushDecision, remediationArtifact, receiptArtifact, commit: trustedCommit, push: trustedPush });
       remainingItems = "remaining" in postPushDecision ? postPushDecision.remaining : remainingItemsForState(postPushState);
-      consecutiveNoProgress = 0;
+      consecutiveNoProgress = trustedHeadChanged || validatedAddressedCommentSignalIds.length > 0 ? 0 : consecutiveNoProgress + 1;
 
       if (postPushDecision.kind !== "remediate") {
         status = finalStatusFromDecision(postPushDecision);
@@ -1416,6 +1223,7 @@ export default workflow({
         status = postPushDecision.kind === "exhausted" ? "exhausted" : "needs_human";
         break;
       }
+    }
     }
 
     const ledger: BabysitLedger = {

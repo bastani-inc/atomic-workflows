@@ -173,6 +173,19 @@ export type LoopDecision =
   | { readonly kind: "needs_human"; readonly reason: string; readonly remaining: readonly string[] }
   | { readonly kind: "exhausted"; readonly iterations_completed: number; readonly remaining: readonly string[] };
 
+export type PreflightAction = "wait_for_ci" | "fix_failure" | "respond_to_review" | "done" | "ask_human";
+
+export type PreflightDecision = {
+  readonly action: PreflightAction;
+  readonly confidence: "low" | "medium" | "high";
+  readonly evidence: readonly string[];
+  readonly next_stage: "poll_ci" | "checkout_and_remediate" | "final_report" | "human";
+  readonly commands_run: readonly string[];
+  readonly stop_reason: string;
+  readonly local_validation: "not_run_not_needed" | "not_run_deferred_until_remediation";
+  readonly loop_decision: LoopDecision;
+};
+
 export type BoundedNumberOptions = {
   readonly min?: number;
   readonly max?: number;
@@ -324,9 +337,11 @@ export function actionableFeedbackText(value: string): boolean {
   if (normalized.length === 0) return false;
 
   return [
-    /\bplease\s+(?:fix|change|update|address|resolve|handle|remove|add|rename|rework)\b/,
+    /\bplease\s+(?:fix|change|update|address|resolve|handle|remove|add|rename|rework|look into|take a look at)\b/,
+    /\b(?:should|could we|can we|would you)\s+(?:fix|change|update|address|resolve|handle|remove|add|rename|rework|avoid|prefer|consider)\b/,
     /\b(?:must|need(?:s)? to|required|requirement|blocker|action required)\b/,
-    /\b(?:fix|bug|broken|failing|failure|fail(?:s|ed|ing)?|error|regression|incorrect|invalid|missing|crash|leak|race|todo)\b/,
+    /\b(?:fix|bug|broken|failing|failure|fail(?:s|ed|ing)?|error|regression|incorrect|invalid|missing|crash|leak|race|todo|stale|outdated|merge conflict|conflict)\b/,
+    /\b(?:nit|nits|nitpick|suggestion|consider|prefer|would prefer)\b/,
     /^(?:fix|change|update|address|resolve|handle|remove|add|rename|rework)\b/,
   ].some((pattern) => pattern.test(normalized));
 }
@@ -601,6 +616,75 @@ export function normalizePullRequestLifecycleState(value: unknown): PullRequestL
   return "UNKNOWN";
 }
 
+export function classifyPreflightDecision(
+  state: PullRequestState,
+  loopDecision: LoopDecision,
+  options: { readonly commands_run?: readonly string[] } = {},
+): PreflightDecision {
+  const evidence = [
+    `PR ${state.url}`,
+    `headRefOid ${state.head_sha || "missing"}`,
+    `lifecycle ${state.lifecycle_state}`,
+    `checks ${state.checks.state} (${state.checks.observed_count} observed)`,
+    `review decision ${state.review_decision}`,
+    `actionable feedback ${actionableReviewThreads(state).length + actionableCommentSignals(state).length}`,
+    `remaining items ${remainingItemsForState(state).length}`,
+  ];
+  const base = {
+    evidence,
+    commands_run: [...(options.commands_run ?? [])],
+    loop_decision: loopDecision,
+  };
+
+  switch (loopDecision.kind) {
+    case "clean":
+      return {
+        ...base,
+        action: "done",
+        confidence: "high",
+        next_stage: "final_report",
+        local_validation: "not_run_not_needed",
+        stop_reason: "Observed PR state is clean; enough evidence was collected to finish without checkout or local validation.",
+      };
+    case "wait_for_ci":
+      return {
+        ...base,
+        action: "wait_for_ci",
+        confidence: "high",
+        next_stage: "poll_ci",
+        local_validation: "not_run_not_needed",
+        stop_reason: "CI is pending; route to the bounded CI polling gate instead of inspecting locally.",
+      };
+    case "remediate":
+      return {
+        ...base,
+        action: loopDecision.failing_checks.length > 0 ? "fix_failure" : "respond_to_review",
+        confidence: "high",
+        next_stage: "checkout_and_remediate",
+        local_validation: "not_run_deferred_until_remediation",
+        stop_reason: "Actionable CI/review work exists; stop preflight and let the remediation stage own checkout-local validation and fixes.",
+      };
+    case "exhausted":
+      return {
+        ...base,
+        action: "ask_human",
+        confidence: "high",
+        next_stage: "human",
+        local_validation: "not_run_not_needed",
+        stop_reason: "The configured remediation budget is exhausted; route to human attention.",
+      };
+    case "needs_human":
+      return {
+        ...base,
+        action: "ask_human",
+        confidence: "high",
+        next_stage: "human",
+        local_validation: "not_run_not_needed",
+        stop_reason: "A human-only blocker was found; enough evidence was collected to stop preflight.",
+      };
+  }
+}
+
 export function classifyPrReadiness(state: PullRequestState, history: IterationHistory): LoopDecision {
   const remaining = remainingItemsForState(state);
   const actionableFeedback = [...actionableReviewThreads(state), ...actionableCommentSignals(state)];
@@ -627,9 +711,7 @@ export function classifyPrReadiness(state: PullRequestState, history: IterationH
     return { kind: "needs_human", reason: "No push access to the PR branch was confirmed.", remaining };
   }
 
-  if (state.merge_conflict || state.mergeability?.kind === "conflicting" || state.mergeability?.kind === "dirty") {
-    return { kind: "needs_human", reason: "The PR branch has merge conflicts that require human resolution.", remaining };
-  }
+  const mergeConflictNeedsRemediation = state.merge_conflict || state.mergeability?.kind === "conflicting" || state.mergeability?.kind === "dirty";
 
   if (state.mergeability?.kind === "unknown") {
     return { kind: "needs_human", reason: "GitHub mergeability is unknown, so the PR cannot be declared clean safely.", remaining };
@@ -643,7 +725,8 @@ export function classifyPrReadiness(state: PullRequestState, history: IterationH
     return { kind: "needs_human", reason: "Review feedback is ambiguous and should not be remediated automatically.", remaining };
   }
 
-  if (nonActionableLiveThreads.length > 0) {
+  const requestedChangesWithLiveThreads = state.review_decision === "CHANGES_REQUESTED" && nonActionableLiveThreads.length > 0;
+  if (nonActionableLiveThreads.length > 0 && !requestedChangesWithLiveThreads) {
     return { kind: "needs_human", reason: "Unresolved non-outdated inline review threads remain but were not safely classified as actionable.", remaining };
   }
 
@@ -671,10 +754,10 @@ export function classifyPrReadiness(state: PullRequestState, history: IterationH
     return { kind: "needs_human", reason: "One or more CI checks have unknown state.", remaining };
   }
 
-  if (failingCheckNames.length > 0 || actionableFeedback.length > 0) {
+  if (failingCheckNames.length > 0 || actionableFeedback.length > 0 || mergeConflictNeedsRemediation || requestedChangesWithLiveThreads) {
     return {
       kind: "remediate",
-      feedback_count: actionableFeedback.length,
+      feedback_count: actionableFeedback.length + (requestedChangesWithLiveThreads ? nonActionableLiveThreads.length : 0),
       failing_checks: failingCheckNames,
     };
   }

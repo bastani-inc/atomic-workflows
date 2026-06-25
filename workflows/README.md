@@ -13,7 +13,7 @@ Each workflow has its own subfolder with an `index.ts` entrypoint and local docu
 | `security-gate` | [`security-gate/index.ts`](./security-gate/index.ts) | [`security-gate/README.md`](./security-gate/README.md) |
 | `spec-driven-development` | [`spec-driven-development/index.ts`](./spec-driven-development/index.ts) | [`spec-driven-development/README.md`](./spec-driven-development/README.md) |
 
-Workflow-specific helper code and tests live next to the workflow files they support. The `babysit-pr` PR shepherd keeps remediation children on read/edit/write tools without shell access and caps CI/post-push sleep intervals to the remaining `poll_timeout` budget.
+Workflow-specific helper code and tests live next to the workflow files they support. The `babysit-pr` PR shepherd uses a structured preflight classifier before checkout, defers local validation until remediation is actually needed, runs trusted shell-capable remediation when routed there, and caps CI/post-push sleep intervals to the remaining `poll_timeout` budget.
 
 ## List and inspect
 

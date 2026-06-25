@@ -6,6 +6,7 @@ import {
   actionableFeedbackText,
   aggregateChecks,
   classifyPrReadiness,
+  classifyPreflightDecision,
   collectReceiptOwnedPaths,
   remainingItemsForState,
   mergeRequiredAndAllChecks,
@@ -260,6 +261,8 @@ describe("babysit-pr check aggregation and decisions", () => {
     expect(actionableFeedbackText("This must handle empty input")).toBe(true);
     expect(actionableFeedbackText("This is broken and failing")).toBe(true);
     expect(actionableFeedbackText("Please take a look when you can")).toBe(false);
+    expect(actionableFeedbackText("Could we avoid stale routing here?")).toBe(true);
+    expect(actionableFeedbackText("nit: prefer the existing helper")).toBe(true);
     expect(actionableFeedbackText("This should be okay now")).toBe(false);
     expect(actionableFeedbackText("Thanks for the update")).toBe(false);
   });
@@ -369,6 +372,36 @@ describe("babysit-pr check aggregation and decisions", () => {
     expect(decision).toEqual({ kind: "wait_for_ci", pending: ["build"] });
   });
 
+  test("preflight classifier emits a structured route and stop reason", () => {
+    const state = prState({ checks: checks([{ name: "lint", conclusion: "failure" }]) });
+    const loopDecision = classifyPrReadiness(state, { iterations_completed: 0, max_iterations: 10 });
+    const preflight = classifyPreflightDecision(state, loopDecision, { commands_run: ["gh pr view", "gh pr checks"] });
+
+    expect(preflight).toMatchObject({
+      action: "fix_failure",
+      confidence: "high",
+      next_stage: "checkout_and_remediate",
+      commands_run: ["gh pr view", "gh pr checks"],
+      local_validation: "not_run_deferred_until_remediation",
+      loop_decision: loopDecision,
+    });
+    expect(preflight.evidence).toContain("checks failure (1 observed)");
+    expect(preflight.stop_reason).toContain("stop preflight");
+  });
+
+  test("preflight classifier finishes clean PRs without local validation", () => {
+    const state = prState();
+    const loopDecision = classifyPrReadiness(state, { iterations_completed: 0, max_iterations: 10 });
+    const preflight = classifyPreflightDecision(state, loopDecision);
+
+    expect(preflight).toMatchObject({
+      action: "done",
+      next_stage: "final_report",
+      local_validation: "not_run_not_needed",
+    });
+    expect(preflight.stop_reason).toContain("without checkout or local validation");
+  });
+
   test("routes closed, merged, and unknown lifecycle states to humans before CI decisions", () => {
     for (const lifecycleState of ["CLOSED", "MERGED", "UNKNOWN"] as const) {
       const decision = classifyPrReadiness(prState({
@@ -416,6 +449,15 @@ describe("babysit-pr check aggregation and decisions", () => {
     });
   });
 
+  test("routes requested-change live inline threads to remediation even without keyword actionability", () => {
+    const decision = classifyPrReadiness(prState({
+      review_decision: "CHANGES_REQUESTED",
+      review_threads: [{ id: "1", path: "src/a.ts", line: 12, body: "This behavior is surprising", author: "reviewer", resolved: false, outdated: false, actionable: false }],
+    }), { iterations_completed: 0, max_iterations: 10 });
+
+    expect(decision).toEqual({ kind: "remediate", feedback_count: 1, failing_checks: [] });
+  });
+
   test("routes ambiguous live inline threads to humans before failing CI remediation", () => {
     const decision = classifyPrReadiness(prState({
       checks: checks([{ name: "lint", conclusion: "failure" }]),
@@ -438,7 +480,7 @@ describe("babysit-pr check aggregation and decisions", () => {
     expect(decision).toMatchObject({ kind: "exhausted", iterations_completed: 3 });
   });
 
-  test("normalizes mergeability and refuses conflicting or unknown clean exits", () => {
+  test("normalizes mergeability, remediates conflicts, and refuses unknown clean exits", () => {
     expect(normalizeMergeability("MERGEABLE", "CLEAN")).toMatchObject({ kind: "clean" });
     expect(normalizeMergeability("CONFLICTING", "DIRTY")).toMatchObject({ kind: "dirty" });
     expect(normalizeMergeability("UNKNOWN", "UNKNOWN")).toMatchObject({ kind: "unknown" });
@@ -450,7 +492,7 @@ describe("babysit-pr check aggregation and decisions", () => {
     expect(classifyPrReadiness(prState({ mergeability: normalizeMergeability("CONFLICTING", "DIRTY") }), {
       iterations_completed: 0,
       max_iterations: 10,
-    })).toMatchObject({ kind: "needs_human", reason: expect.stringContaining("merge conflicts") });
+    })).toEqual({ kind: "remediate", feedback_count: 0, failing_checks: [] });
   });
 
   test("normalizes inline review threads with source, location, resolution, and actionability", () => {
@@ -480,14 +522,14 @@ describe("babysit-pr check aggregation and decisions", () => {
     expect(outdated).toMatchObject({ outdated: true, actionable: false });
   });
 
-  test("requires humans for no-progress, push access, merge conflict, ambiguous feedback, and non-fast-forward safety cases", () => {
+  test("requires humans for no-progress, push access, ambiguous feedback, and non-fast-forward safety cases", () => {
     expect(classifyPrReadiness(prState({ checks: checks([{ name: "test", conclusion: "failure" }]) }), {
       iterations_completed: 1,
       max_iterations: 10,
       consecutive_no_progress: 1,
     })).toMatchObject({ kind: "needs_human", reason: expect.stringContaining("no progress") });
     expect(classifyPrReadiness(prState({ push_accessible: false }), { iterations_completed: 0, max_iterations: 10 })).toMatchObject({ kind: "needs_human", reason: expect.stringContaining("No push access") });
-    expect(classifyPrReadiness(prState({ merge_conflict: true }), { iterations_completed: 0, max_iterations: 10 })).toMatchObject({ kind: "needs_human", reason: expect.stringContaining("merge conflicts") });
+    expect(classifyPrReadiness(prState({ merge_conflict: true }), { iterations_completed: 0, max_iterations: 10 })).toEqual({ kind: "remediate", feedback_count: 0, failing_checks: [] });
     expect(classifyPrReadiness(prState({ ambiguous_feedback: true }), { iterations_completed: 0, max_iterations: 10 })).toMatchObject({ kind: "needs_human", reason: expect.stringContaining("ambiguous") });
     expect(classifyPrReadiness(prState({ non_fast_forward: true }), { iterations_completed: 0, max_iterations: 10 })).toMatchObject({ kind: "needs_human", reason: expect.stringContaining("fast-forward") });
   });
@@ -815,47 +857,59 @@ describe("babysit-pr workflow shape", () => {
     ]);
   });
 
-  test("source keeps remote mutation behind push_pr_fixes and enforces child mutation policy", () => {
+  test("source runs remediation as a trusted shell-capable stage", () => {
     const source = babysitSource();
-    expect(source).toContain("async function push_pr_fixes");
-    expect(source).toContain("await push_pr_fixes(");
-    expect(source).toContain('tools: ["read", "edit", "write"]');
-    expect(source).toContain('noTools: "builtin"');
-    expect(source).toContain('mcp: { deny: ["*"] }');
-    expect(source).toContain("this remediation stage has no shell access");
-    expect(source).not.toContain('tools: ["read", "edit", "write", "bash"]');
-    expect(source).not.toContain("bashPolicy");
-    expect(source).not.toContain('default: "allow"');
-    expect(source).not.toContain("--force");
-    expect(source).not.toContain("thread resolve");
+    expect(source).toContain("Apply one trusted remediation pass");
+    expect(source).toContain("--dangerously-skip-permissions");
+    expect(source).toContain('tools: ["read", "edit", "write", "bash"]');
+    expect(source).toContain("you may run local commands, tests, typechecks, builds, package scripts, git, and gh");
+    expect(source).toContain("create commits, push to the PR branch, update PR title/body or other PR metadata");
+    expect(source).toContain("reply to or resolve review threads");
+    expect(source).not.toContain("this remediation stage has no shell access");
+    expect(source).not.toContain('noTools: "builtin"');
+    expect(source).not.toContain('mcp: { deny: ["*"] }');
   });
 
-  test("source stages only explicit remediation-owned paths", () => {
+  test("source leaves commits and staging to trusted remediation", () => {
     const source = babysitSource();
     expect(source).toContain("parseRemediationReceipt");
-    expect(source).toContain("collectOwnedRemediationPaths");
     expect(source).toContain("guardCleanWorkspace");
     expect(source).toContain("parseGitStatusPorcelain");
-    expect(source).toContain("git([\"add\", \"--\", ...ownedPaths]");
+    expect(source).toContain("collectReceiptOwnedPaths");
+    expect(source).toContain("trusted-remediation-left-clean-or-receipt-owned-workspace");
+    expect(source).not.toContain("collectOwnedRemediationPaths");
+    expect(source).not.toContain("commitPrFixes");
     expect(source).not.toMatch(/git\(\["add",\s*"--all"/);
     expect(source).not.toMatch(/git\(\["add",\s*"-A"/);
     expect(source).not.toMatch(/git\(\["add",\s*"\."/);
+    expect(source).not.toContain('git(["add", "--", ...ownedPaths]');
   });
 
-  test("source guards a clean workspace before checkout and preserves remediation guard", () => {
+  test("source classifies PR state before checkout and preserves remediation guard", () => {
     const source = babysitSource();
-    expect(source).toContain("pre-checkout-guard-clean-workspace-failed");
-    expect(source).toContain("needs human pre-checkout dirty workspace");
+    expect(source).toContain('ctx.stage("babysit-pr-preflight").complete');
+    expect(source).toContain('stages.push("babysit-pr-preflight")');
+    expect(source).toContain("00-preflight-decision.json");
+    expect(source).toContain("classifyPreflightDecision");
+    expect(source).toContain("preflightNeedsCheckout(preflightDecision)");
+    expect(source).toContain("pre-checkout-stash-dirty-workspace-failed");
+    expect(source).toContain("needs human pre-checkout dirty workspace stash failed");
     expect(source).toContain("iterations_completed: 0");
     expect(source).toContain("commits_pushed: []");
     const authIndex = source.indexOf("ghAuthAvailable(workflowCwd)");
-    const preCheckoutGuardIndex = source.indexOf("await guardCleanWorkspace(workflowCwd, artifactDir)");
+    const preflightIndex = source.indexOf("classifyPreflightDecision(preflightState");
+    const fetchStateIndex = source.indexOf("await fetchPrState(parsed.identity, workflowCwd)");
+    const preCheckoutGuardIndex = source.indexOf("await stashPreExistingWorkspaceChanges(workflowCwd, artifactDir");
     const checkoutIndex = source.indexOf("await checkoutPrBranch(parsed.identity, workflowCwd)");
+    const checkoutVerifyIndex = source.indexOf("verifyLocalHeadMatchesPrHead after PR checkout");
     const remediationGuardIndex = source.indexOf("stages.push(`guard-clean-workspace-${iteration}`)");
     expect(authIndex).toBeGreaterThan(-1);
-    expect(preCheckoutGuardIndex).toBeGreaterThan(authIndex);
+    expect(fetchStateIndex).toBeGreaterThan(authIndex);
+    expect(preflightIndex).toBeGreaterThan(fetchStateIndex);
+    expect(preCheckoutGuardIndex).toBeGreaterThan(preflightIndex);
     expect(checkoutIndex).toBeGreaterThan(preCheckoutGuardIndex);
-    expect(remediationGuardIndex).toBeGreaterThan(checkoutIndex);
+    expect(checkoutVerifyIndex).toBeGreaterThan(checkoutIndex);
+    expect(remediationGuardIndex).toBeGreaterThan(checkoutVerifyIndex);
   });
 
   test("source excludes workflow report and artifact paths from remediation ownership", () => {
@@ -878,73 +932,68 @@ describe("babysit-pr workflow shape", () => {
     expect(source).toContain("const checks = checkedRuns.observed ? checkedRuns : aggregateChecks(statusRollupChecks(view))");
   });
 
-  test("source fetches lifecycle state, mergeability, inline review threads, headRefOid, resolved push targets, and post-push sync", () => {
+  test("source fetches lifecycle state, mergeability, inline review threads, headRefOid, and post-remediation sync", () => {
     const source = babysitSource();
     expect(source).toContain("headRefOid");
     expect(source).toContain("text(view.headRefOid)");
     expect(source).toContain("lifecycle_state: normalizePullRequestLifecycleState(view.state)");
-    expect(source).toContain("if (prState.lifecycle_state === \"OPEN\")");
-    expect(source).toContain("current.lifecycle_state !== \"OPEN\"");
+    expect(source).toContain('if (prState.lifecycle_state === "OPEN")');
+    expect(source).toContain('current.lifecycle_state !== "OPEN"');
     expect(source).not.toContain("lastCommit");
     expect(source).not.toContain("view.commits");
     expect(source).toContain("mergeable,mergeStateStatus");
     expect(source).toContain("reviewThreads(first: 50");
-    expect(source).toContain("async function resolvePushTarget");
-    expect(source).toContain("\"remote\", \"get-url\", \"--push\", \"--all\"");
-    expect(source).toContain("single validated push URL");
-    expect(source).toContain("owner/repo slug");
+    expect(source).not.toContain("async function resolvePushTarget");
+    expect(source).not.toContain('"remote", "get-url", "--push", "--all"');
     expect(source).toContain("async function syncAfterPush");
     expect(source).toContain("async function sleepUntilDeadline");
     expect(source).toContain("Math.min(pollIntervalSeconds * 1_000, remainingMs)");
     expect(source).toContain("pushedCommitSha");
-    expect(source).toContain("current.checks.observed && current.checks.state !== \"pending\"");
+    expect(source).toContain('current.checks.observed && current.checks.state !== "pending"');
     expect(source).toContain("No CI check records appeared for the pushed commit");
-    expect(source).toContain("await syncAfterPush(parsed.identity, commit.sha");
+    expect(source).toContain("await syncAfterPush(parsed.identity, parentHeadAfterRemediation");
   });
 
-  test("source confirms push access before remediation and never fakes PR metadata", () => {
+  test("source observes PR head before trusted remediation", () => {
     const source = babysitSource();
-    expect(source).toContain("async function confirmPushAccessForPrHead");
-    expect(source).toContain('"push", "--dry-run", "--porcelain"');
-    expect(source).toContain('"push", "--dry-run", "--porcelain", "--no-verify"');
-    expect(source).toContain('await verifyLocalHeadMatchesPrHead(cwd, state, "confirmPushAccessForPrHead")');
+    expect(source).not.toContain("async function confirmPushAccessForPrHead");
+    expect(source).not.toContain('await verifyLocalHeadMatchesPrHead(cwd, state, "confirmPushAccessForPrHead")');
     expect(source).not.toContain("push_accessible: true,\n    review_decision");
-    expect(source).toContain("prState = { ...prState, push_accessible: true }");
-    expect(source).toContain("push_pr_fixes refused to push because push access was not confirmed");
+    expect(source).toContain("verifyLocalHeadMatchesPrHead before trusted remediation");
+    expect(source).toContain("observe-trusted-remediation-head");
 
-    const confirmIndex = source.indexOf("confirmPushAccessForPrHead(workflowCwd, prState)");
+    const verifyIndex = source.indexOf("verifyLocalHeadMatchesPrHead before trusted remediation");
     const taskIndex = source.indexOf("ctx.task(`remediate-pr-iteration");
-    const commitIndex = source.indexOf("commitPrFixes(workflowCwd");
-    expect(confirmIndex).toBeGreaterThan(-1);
-    expect(taskIndex).toBeGreaterThan(confirmIndex);
-    expect(commitIndex).toBeGreaterThan(taskIndex);
+    const observeIndex = source.indexOf("observe-trusted-remediation-head");
+    expect(verifyIndex).toBeGreaterThan(-1);
+    expect(taskIndex).toBeGreaterThan(verifyIndex);
+    expect(observeIndex).toBeGreaterThan(taskIndex);
   });
 
-  test("source disables local hooks for commit and push, and verifies parent-owned commit trees", () => {
+  test("source removes parent-owned commit and push helpers", () => {
     const source = babysitSource();
-    expect(source).toContain("async function gitWithLocalAutomationDisabled");
-    expect(source).toContain("core.hooksPath=${hooksPath}");
-    expect(source).toContain('"commit.gpgSign=false"');
-    expect(source).toContain('"commit", "--no-verify", "-m", message');
-    expect(source).toContain('"push", "--no-verify"');
-    expect(source).toContain("const expectedTree = await git([\"write-tree\"]");
-    expect(source).toContain("HEAD^{tree}");
-    expect(source).toContain("selectively staged remediation tree");
+    expect(source).not.toContain("async function gitWithLocalAutomationDisabled");
+    expect(source).not.toContain("core.hooksPath=${hooksPath}");
+    expect(source).not.toContain('"commit.gpgSign=false"');
+    expect(source).not.toContain('"commit", "--no-verify", "-m", message');
+    expect(source).not.toContain("commitPrFixes");
+    expect(source).not.toContain("push_pr_fixes");
+    expect(source).not.toContain("selectively staged remediation tree");
   });
 
-  test("source handles remediation child failures before receipt parsing and ownership", () => {
+  test("source handles trusted remediation failures before receipt parsing and sync", () => {
     const source = babysitSource();
-    expect(source).toContain("Remediation child failed before the receipt gate.");
+    expect(source).toContain("Trusted remediation failed before the receipt gate.");
     expect(source).toContain("await access(remediationPath)");
-    const childFailureIndex = source.indexOf("Remediation child failed before the receipt gate.");
+    const childFailureIndex = source.indexOf("Trusted remediation failed before the receipt gate.");
     const parseIndex = source.indexOf("parseRemediationReceipt(remediationPath)");
-    const ownershipIndex = source.indexOf("collectOwnedRemediationPaths(workflowCwd");
+    const syncIndex = source.indexOf("sync-after-trusted-remediation");
     expect(childFailureIndex).toBeGreaterThan(-1);
     expect(parseIndex).toBeGreaterThan(childFailureIndex);
-    expect(ownershipIndex).toBeGreaterThan(parseIndex);
+    expect(syncIndex).toBeGreaterThan(parseIndex);
   });
 
-  test("source validates remediation receipt outcome and addressed IDs before ownership collection", () => {
+  test("source validates remediation receipt outcome and addressed IDs before post-remediation sync", () => {
     const source = babysitSource();
     expect(source).toContain("validateRemediationReceiptOutcome");
     expect(source).toContain("validate_remediation_receipt_outcome rejected");
@@ -953,10 +1002,12 @@ describe("babysit-pr workflow shape", () => {
     expect(source).toContain("Omit addressed_comment_signal_ids or use [] when no top-level comment/review-summary signal was addressed");
     const validateIndex = source.indexOf("validateRemediationReceiptOutcome(remediationReceipt)");
     const addressedIndex = source.indexOf("validateReceiptAddressedCommentSignalIds(prState, remediationReceipt)");
-    const ownershipIndex = source.indexOf("collectOwnedRemediationPaths(workflowCwd");
+    const cleanWorkspaceIndex = source.indexOf("trusted-remediation-left-clean-or-receipt-owned-workspace");
+    const syncIndex = source.indexOf("sync-after-trusted-remediation");
     expect(validateIndex).toBeGreaterThan(-1);
     expect(addressedIndex).toBeGreaterThan(validateIndex);
-    expect(ownershipIndex).toBeGreaterThan(addressedIndex);
+    expect(cleanWorkspaceIndex).toBeGreaterThan(addressedIndex);
+    expect(syncIndex).toBeGreaterThan(cleanWorkspaceIndex);
   });
 
   test("source feeds raw unredacted command output to parsers", () => {
@@ -965,7 +1016,6 @@ describe("babysit-pr workflow shape", () => {
     expect(source).toContain("async function ghRaw");
     expect(source).toContain("JSON.parse(await ghRaw(args, cwd))");
     expect(source).toContain('return await gitRaw(["remote", "get-url", "origin"], cwd)');
-    expect(source).toContain('gitRaw(["remote", "get-url", "--push", "--all", remote]');
     expect(source).not.toContain("JSON.parse(await gh(args, cwd))");
   });
 
@@ -996,30 +1046,32 @@ describe("babysit-pr workflow shape", () => {
     expect(source).not.toContain("markActionableCommentSignalsAddressed(prState, addressedCommentSignalIds)");
   });
 
-  test("source records final needs_human when post-push sync throws", () => {
+  test("source records final needs_human when post-remediation sync throws", () => {
     const source = babysitSource();
-    expect(source).toContain("Post-push sync failed after a successful push.");
-    expect(source).toContain("Pushed commit ${commit.sha}");
-    expect(source).toContain("sync-after-push-failed");
+    expect(source).toContain("Post-remediation sync failed after trusted remediation completed.");
+    expect(source).toContain("Trusted remediation completed at local HEAD ${parentHeadAfterRemediation}");
+    expect(source).toContain("sync-after-trusted-remediation-failed");
   });
 
-  test("source gates child remediation commits before parsing receipts or pushing", () => {
+  test("source accepts trusted remediation commits and observes pushed state", () => {
     const source = babysitSource();
     expect(source).toContain("parentHeadBeforeRemediation = await verifyLocalHeadMatchesPrHead");
-    expect(source).toContain("parentHeadAfterRemediation = await git([\"rev-parse\", \"HEAD\"]");
-    expect(source).toContain("refusing to parse, stage, commit, or push");
-    expect(source).toContain("Do not run git commit, git push, git reset, git rebase");
-    expect(source).toContain("commitPrFixes(workflowCwd, iteration, ownedRemediationPaths, prState.head_sha)");
-    expect(source).toContain("commit_pr_fixes refused to continue because HEAD changed");
+    expect(source).toContain('parentHeadAfterRemediation = await git(["rev-parse", "HEAD"]');
+    expect(source).toContain("const trustedHeadChanged = parentHeadAfterRemediation !== parentHeadBeforeRemediation");
+    expect(source).toContain("trusted remediation commit(s)");
+    expect(source).toContain("sync-after-trusted-remediation-push");
+    expect(source).not.toContain("refusing to parse, stage, commit, or push");
+    expect(source).not.toContain("Do not run git commit, git push, git reset, git rebase");
   });
 
-  test("source verifies PR head ancestry and parent-owned push commits", () => {
+  test("source verifies PR head before trusted remediation and records trusted commits", () => {
     const source = babysitSource();
     expect(source).toContain("async function verifyLocalHeadMatchesPrHead");
     expect(source).toContain("latest observed PR headRefOid");
     expect(source).toContain("readonly parentSha: string");
-    expect(source).toContain("commit.parentSha !== state.head_sha");
-    expect(source).toContain("local HEAD ${currentHead} is not the parent-owned remediation commit");
+    expect(source).toContain("parentSha: parentHeadBeforeRemediation");
+    expect(source).not.toContain("commit.parentSha !== state.head_sha");
+    expect(source).not.toContain("local HEAD ${currentHead} is not the parent-owned remediation commit");
   });
 
   test("source preserves exact raw stdout separately for NUL-delimited git porcelain", () => {
@@ -1028,10 +1080,9 @@ describe("babysit-pr workflow shape", () => {
     expect(source).toContain("readonly rawStdout?: string");
     expect(source).toContain("rawStdout: stdout");
     expect(source).toContain("async function gitRaw");
-    expect(source).toContain("rawStdout ?? \"\"");
-    expect(source).toContain("gitRaw([\"status\", \"--porcelain=v1\", \"-z\"");
-    expect(source).toContain("gitRaw([\"diff\", \"--cached\", \"--name-only\", \"-z\"]");
-    expect(source).not.toContain("parseGitStatusPorcelain(await git([\"status\", \"--porcelain=v1\", \"-z\"");
+    expect(source).toContain('rawStdout ?? ""');
+    expect(source).toContain('gitRaw(["status", "--porcelain=v1", "-z"');
+    expect(source).not.toContain('parseGitStatusPorcelain(await git(["status", "--porcelain=v1", "-z"');
     expect(source).not.toContain("redactCommandOutput(options.rawStdout ? stdout");
   });
 
@@ -1061,7 +1112,7 @@ describe("babysit-pr workflow shape", () => {
 
   test("README documents safety boundaries and reports", () => {
     const readme = babysitReadme();
-    expect(readme).toContain("push_pr_fixes");
+    expect(readme).toContain("trusted remediation stage");
     expect(readme).toContain("does not merge");
     expect(readme).toContain("needs_human");
     expect(readme).toContain("Empty or absent check data is never treated as green");
@@ -1073,8 +1124,8 @@ describe("babysit-pr workflow shape", () => {
     expect(readme).toContain("visible optional failures, pending checks, or unknown check states");
     expect(readme).toContain("GitHub `statusCheckRollup`");
     expect(readme).toContain("Parser-facing command stdout is kept exact and unredacted");
-    expect(readme).toContain("local hooks and commit signing disabled");
-    expect(readme).toContain("Push preflights and real pushes use `--no-verify`");
+    expect(readme).toContain("trusted remediation stage");
+    expect(readme).toContain("run tests, typechecks, builds, package scripts, `git`, and `gh`");
     expect(readme).toContain("babysit-pr/");
     expect(readme).toContain(".babysit-pr-");
   });
