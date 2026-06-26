@@ -51,6 +51,7 @@ export type CheckRecord = {
   readonly conclusion?: string | null;
   readonly bucket?: string | null;
   readonly link?: string | null;
+  readonly head_sha?: string | null;
 };
 
 export type CheckSummary = {
@@ -111,6 +112,7 @@ export type RemediationReceiptChange =
 export type RemediationReceiptTest = {
   readonly command: string;
   readonly result: "passed" | "failed" | "skipped";
+  readonly note?: string;
 };
 
 export type RemediationReceipt = {
@@ -713,10 +715,6 @@ export function classifyPrReadiness(state: PullRequestState, history: IterationH
 
   const mergeConflictNeedsRemediation = state.merge_conflict || state.mergeability?.kind === "conflicting" || state.mergeability?.kind === "dirty";
 
-  if (state.mergeability?.kind === "unknown") {
-    return { kind: "needs_human", reason: "GitHub mergeability is unknown, so the PR cannot be declared clean safely.", remaining };
-  }
-
   if (state.non_fast_forward) {
     return { kind: "needs_human", reason: "The PR branch moved or rejected a fast-forward push.", remaining };
   }
@@ -752,6 +750,10 @@ export function classifyPrReadiness(state: PullRequestState, history: IterationH
 
   if (state.checks.state === "unknown") {
     return { kind: "needs_human", reason: "One or more CI checks have unknown state.", remaining };
+  }
+
+  if (state.mergeability?.kind === "unknown") {
+    return { kind: "needs_human", reason: "GitHub mergeability is unknown, so the PR cannot be declared clean safely.", remaining };
   }
 
   if (failingCheckNames.length > 0 || actionableFeedback.length > 0 || mergeConflictNeedsRemediation || requestedChangesWithLiveThreads) {
@@ -871,10 +873,16 @@ function parseReceiptTest(value: unknown, index: number): RemediationReceiptTest
   const record = objectValue(value);
   if (!record) return `tests_run[${index}] is not an object`;
   const command = stringField(record.command);
-  const result = stringField(record.result).toLowerCase();
+  const rawResult = stringField(record.result).toLowerCase();
+  const exactResult = ["passed", "failed", "skipped"].includes(rawResult)
+    ? rawResult as "passed" | "failed" | "skipped"
+    : undefined;
+  const embeddedNote = exactResult ? "" : rawResult.match(/^(passed|failed|skipped)\s*[:;,-]\s*(.+)$/i);
+  const result = exactResult ?? (embeddedNote?.[1] as "passed" | "failed" | "skipped" | undefined);
+  const noteParts = [stringField(record.note), embeddedNote?.[2] ? stringField(embeddedNote[2]) : ""].filter(Boolean);
   if (command.length === 0) return `tests_run[${index}].command is required`;
-  if (!["passed", "failed", "skipped"].includes(result)) return `tests_run[${index}].result must be passed, failed, or skipped`;
-  return { command, result: result as "passed" | "failed" | "skipped" };
+  if (!result) return `tests_run[${index}].result must be passed, failed, or skipped`;
+  return { command, result, ...(noteParts.length > 0 ? { note: noteParts.join("; ") } : {}) };
 }
 
 function parseReceiptAddressedCommentSignalIds(value: unknown): readonly string[] | string {

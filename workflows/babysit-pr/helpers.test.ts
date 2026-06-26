@@ -372,6 +372,18 @@ describe("babysit-pr check aggregation and decisions", () => {
     expect(decision).toEqual({ kind: "wait_for_ci", pending: ["build"] });
   });
 
+  test("waits for pending CI before refusing unknown mergeability", () => {
+    const decision = classifyPrReadiness(prState({
+      checks: checks([{ name: "build", status: "queued" }]),
+      mergeability: normalizeMergeability("UNKNOWN", "UNKNOWN"),
+    }), {
+      iterations_completed: 0,
+      max_iterations: 10,
+    });
+
+    expect(decision).toEqual({ kind: "wait_for_ci", pending: ["build"] });
+  });
+
   test("preflight classifier emits a structured route and stop reason", () => {
     const state = prState({ checks: checks([{ name: "lint", conclusion: "failure" }]) });
     const loopDecision = classifyPrReadiness(state, { iterations_completed: 0, max_iterations: 10 });
@@ -579,6 +591,33 @@ describe("babysit-pr remediation receipt, redaction, and git status helpers", ()
     ].join("\n"));
 
     expect(parsed).toMatchObject({ ok: true, receipt: { changed_files: [{ path: "src/final.ts", change: "modify" }], residual_items: [] } });
+  });
+
+  test("parses remediation receipt test notes without treating prose as structure", () => {
+    const parsed = parseRemediationReceiptContent([
+      "FINAL_REMEDIATION_RECEIPT:",
+      JSON.stringify({
+        changed_files: [],
+        tests_run: [
+          { command: "bun test", result: "passed: transient watcher timeout, focused rerun passed" },
+          { command: "bun lint", result: "skipped", note: "not affected" },
+        ],
+        residual_items: [],
+      }),
+    ].join("\n"));
+
+    expect(parsed).toEqual({
+      ok: true,
+      receipt: {
+        changed_files: [],
+        tests_run: [
+          { command: "bun test", result: "passed", note: "transient watcher timeout, focused rerun passed" },
+          { command: "bun lint", result: "skipped", note: "not affected" },
+        ],
+        residual_items: [],
+        addressed_comment_signal_ids: [],
+      },
+    });
   });
 
   test("parses optional addressed comment signal IDs as trimmed sorted unique strings", () => {
@@ -922,14 +961,15 @@ describe("babysit-pr workflow shape", () => {
     expect(source).toContain(".filter((entry) => !isWorkflowOwnedPath(entry.path, ownedRoots))");
   });
 
-  test("source combines required and all gh checks before status rollup fallback", () => {
+  test("source fetches checks for the exact PR head SHA before status rollup fallback", () => {
     const source = babysitSource();
-    expect(source).toContain("async function prChecks");
-    expect(source).toContain("const requiredChecks = await ghPrChecks(identity, cwd, { required: true })");
-    expect(source).toContain("const allChecks = await ghPrChecks(identity, cwd)");
-    expect(source).toContain("return mergeRequiredAndAllChecks(requiredChecks, allChecks)");
-    expect(source).toContain('...(options.required ? ["--required"] : [])');
-    expect(source).toContain("const checks = checkedRuns.observed ? checkedRuns : aggregateChecks(statusRollupChecks(view))");
+    expect(source).toContain("async function headCommitChecks");
+    expect(source).toContain("commits/${headSha}/check-runs?per_page=100");
+    expect(source).toContain("commits/${headSha}/statuses?per_page=100");
+    expect(source).toContain("return headCommitChecks(identity, headSha, cwd)");
+    expect(source).toContain("const checkedRuns = await prChecks(identity, cwd, oid)");
+    expect(source).toContain("const checks = checkedRuns.observed ? checkedRuns : aggregateChecks(statusRollupChecks(view, oid))");
+    expect(source).toContain("head_sha: headSha");
   });
 
   test("source fetches lifecycle state, mergeability, inline review threads, headRefOid, and post-remediation sync", () => {
@@ -949,8 +989,9 @@ describe("babysit-pr workflow shape", () => {
     expect(source).toContain("async function sleepUntilDeadline");
     expect(source).toContain("Math.min(pollIntervalSeconds * 1_000, remainingMs)");
     expect(source).toContain("pushedCommitSha");
-    expect(source).toContain('current.checks.observed && current.checks.state !== "pending"');
+    expect(source).toContain('current.checks.observed && current.checks.state !== "pending" && !shouldWaitForMergeabilityRefresh(current)');
     expect(source).toContain("No CI check records appeared for the pushed commit");
+    expect(source).toContain("GitHub mergeability did not refresh after latest-head checks passed");
     expect(source).toContain("await syncAfterPush(parsed.identity, parentHeadAfterRemediation");
   });
 
@@ -993,13 +1034,16 @@ describe("babysit-pr workflow shape", () => {
     expect(syncIndex).toBeGreaterThan(parseIndex);
   });
 
-  test("source validates remediation receipt outcome and addressed IDs before post-remediation sync", () => {
+  test("source uses schema-backed remediation receipts and defers outcome judgment to refreshed PR state", () => {
     const source = babysitSource();
+    expect(source).toContain("REMEDIATION_RECEIPT_SCHEMA");
+    expect(source).toContain("schema: REMEDIATION_RECEIPT_SCHEMA");
     expect(source).toContain("validateRemediationReceiptOutcome");
-    expect(source).toContain("validate_remediation_receipt_outcome rejected");
+    expect(source).toContain("record-remediation-receipt-outcome");
+    expect(source).not.toContain("validate_remediation_receipt_outcome rejected");
     expect(source).toContain("validate_receipt_addressed_comment_signal_ids rejected");
-    expect(source).toContain("addressed_comment_signal_ids array is only for top-level PR comment or review-summary comment_signal IDs");
-    expect(source).toContain("Omit addressed_comment_signal_ids or use [] when no top-level comment/review-summary signal was addressed");
+    expect(source).toContain("Each tests_run[].result must be exactly passed, failed, or skipped");
+    expect(source).toContain("Do not list GitHub checks pending after your push as residual work");
     const validateIndex = source.indexOf("validateRemediationReceiptOutcome(remediationReceipt)");
     const addressedIndex = source.indexOf("validateReceiptAddressedCommentSignalIds(prState, remediationReceipt)");
     const cleanWorkspaceIndex = source.indexOf("trusted-remediation-left-clean-or-receipt-owned-workspace");
@@ -1120,9 +1164,9 @@ describe("babysit-pr workflow shape", () => {
     expect(readme).toContain("marks only validated receipt-listed stable signal IDs addressed for the current workflow run");
     expect(readme).toContain("before `gh pr checkout`");
     expect(readme).toContain("`addressed_comment_signal_ids` may be omitted or `[]`");
-    expect(readme).toContain("Required checks are preferred where they are discoverable");
-    expect(readme).toContain("visible optional failures, pending checks, or unknown check states");
-    expect(readme).toContain("GitHub `statusCheckRollup`");
+    expect(readme).toContain("queries check-runs and commit statuses for that exact SHA");
+    expect(readme).toContain("prevents old Windows or matrix jobs from previous commits");
+    expect(readme).toContain("mergeability/branch-protection state to refresh");
     expect(readme).toContain("Parser-facing command stdout is kept exact and unredacted");
     expect(readme).toContain("trusted remediation stage");
     expect(readme).toContain("run tests, typechecks, builds, package scripts, `git`, and `gh`");

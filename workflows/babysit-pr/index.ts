@@ -57,6 +57,19 @@ const WORKFLOW_NAME = "babysit-pr";
 const WORKFLOW_ARTIFACT_ROOT_PREFIX = `.${WORKFLOW_NAME}-`;
 const WORKFLOW_REPORT_ROOT = WORKFLOW_NAME;
 const FILE_ONLY_OUTPUT = "file-only" as const;
+const REMEDIATION_RECEIPT_SCHEMA = Type.Object({
+  changed_files: Type.Array(Type.Union([
+    Type.Object({ change: Type.Union([Type.Literal("add"), Type.Literal("modify"), Type.Literal("delete")]), path: Type.String() }),
+    Type.Object({ change: Type.Union([Type.Literal("rename"), Type.Literal("copy")]), old_path: Type.String(), new_path: Type.String() }),
+  ])),
+  tests_run: Type.Array(Type.Object({
+    command: Type.String(),
+    result: Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")]),
+    note: Type.Optional(Type.String()),
+  })),
+  residual_items: Type.Array(Type.String()),
+  addressed_comment_signal_ids: Type.Optional(Type.Array(Type.String())),
+});
 
 type CommandReceipt = {
   readonly command: string;
@@ -313,7 +326,7 @@ async function fetchReviewThreads(identity: PullRequestIdentity, cwd: string): P
   throw new Error("fetch_review_threads stopped after 20 pages to avoid unsafe pagination.");
 }
 
-function statusRollupChecks(view: Record<string, unknown>): CheckRecord[] {
+function statusRollupChecks(view: Record<string, unknown>, headSha?: string): CheckRecord[] {
   const rollup = Array.isArray(view.statusCheckRollup) ? view.statusCheckRollup : [];
   return rollup.map((entry, index) => {
     const record = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
@@ -324,8 +337,70 @@ function statusRollupChecks(view: Record<string, unknown>): CheckRecord[] {
       conclusion: text(record.conclusion),
       bucket: text(record.bucket),
       link: text(record.detailsUrl ?? record.link),
+      head_sha: headSha,
     } satisfies CheckRecord;
   });
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+}
+
+function commitCheckRunRecords(value: unknown, headSha: string): CheckRecord[] {
+  const record = objectRecord(value);
+  const runs = Array.isArray(record.check_runs) ? record.check_runs : [];
+  return runs.map((entry, index) => {
+    const run = objectRecord(entry);
+    const suite = objectRecord(run.check_suite);
+    return {
+      name: text(run.name, `check-run-${index + 1}`),
+      status: text(run.status),
+      conclusion: text(run.conclusion),
+      bucket: text(run.conclusion ?? run.status),
+      link: text(run.html_url ?? run.details_url),
+      head_sha: text(run.head_sha ?? suite.head_sha, headSha),
+    } satisfies CheckRecord;
+  });
+}
+
+function commitStatusRecords(value: unknown, headSha: string): CheckRecord[] {
+  const statuses = Array.isArray(value) ? value : [];
+  return statuses.map((entry, index) => {
+    const status = objectRecord(entry);
+    return {
+      name: text(status.context, `status-${index + 1}`),
+      state: text(status.state),
+      status: text(status.state),
+      conclusion: text(status.state),
+      bucket: text(status.state),
+      link: text(status.target_url),
+      head_sha: headSha,
+    } satisfies CheckRecord;
+  });
+}
+
+async function ghApiJsonOrUndefined<T>(args: readonly string[], cwd: string): Promise<T | undefined> {
+  try {
+    return await ghJson<T>(["api", ...args], cwd);
+  } catch {
+    return undefined;
+  }
+}
+
+async function headCommitChecks(identity: PullRequestIdentity, headSha: string, cwd: string): Promise<CheckSummary> {
+  const [checkRuns, statuses] = await Promise.all([
+    ghApiJsonOrUndefined<Record<string, unknown>>([
+      `repos/${identity.owner}/${identity.repo}/commits/${headSha}/check-runs?per_page=100`,
+    ], cwd),
+    ghApiJsonOrUndefined<unknown[]>([
+      `repos/${identity.owner}/${identity.repo}/commits/${headSha}/statuses?per_page=100`,
+    ], cwd),
+  ]);
+
+  return aggregateChecks([
+    ...commitCheckRunRecords(checkRuns, headSha),
+    ...commitStatusRecords(statuses, headSha),
+  ]);
 }
 
 const PR_CHECK_FIELDS = "name,state,bucket,link,startedAt,completedAt,workflow";
@@ -361,7 +436,8 @@ async function ghPrChecks(identity: PullRequestIdentity, cwd: string, options: {
   }
 }
 
-async function prChecks(identity: PullRequestIdentity, cwd: string): Promise<CheckSummary> {
+async function prChecks(identity: PullRequestIdentity, cwd: string, headSha?: string): Promise<CheckSummary> {
+  if (headSha && headSha.trim().length > 0) return headCommitChecks(identity, headSha, cwd);
   const requiredChecks = await ghPrChecks(identity, cwd, { required: true });
   const allChecks = await ghPrChecks(identity, cwd);
   return mergeRequiredAndAllChecks(requiredChecks, allChecks);
@@ -377,11 +453,11 @@ async function fetchPrState(identity: PullRequestIdentity, cwd: string): Promise
     "--json",
     "url,number,state,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner,maintainerCanModify,reviewDecision,latestReviews,comments,statusCheckRollup,mergeable,mergeStateStatus",
   ], cwd);
-  const checkedRuns = await prChecks(identity, cwd);
-  const inlineReviewThreads = await fetchReviewThreads(identity, cwd);
-  const checks = checkedRuns.observed ? checkedRuns : aggregateChecks(statusRollupChecks(view));
   const headRepository = resolveHeadRepositoryIdentity(view.headRepository, view.headRepositoryOwner, identity);
   const oid = text(view.headRefOid);
+  const checkedRuns = await prChecks(identity, cwd, oid);
+  const inlineReviewThreads = await fetchReviewThreads(identity, cwd);
+  const checks = checkedRuns.observed ? checkedRuns : aggregateChecks(statusRollupChecks(view, oid));
   const mergeability = normalizeMergeability(
     typeof view.mergeable === "string" || typeof view.mergeable === "boolean" || view.mergeable === null ? view.mergeable : undefined,
     typeof view.mergeStateStatus === "string" || view.mergeStateStatus === null ? view.mergeStateStatus : undefined,
@@ -418,6 +494,21 @@ function markReceiptCommentSignalsAddressed(signalIds: readonly string[], addres
   for (const id of signalIds) addressedIds.add(id);
 }
 
+function shouldWaitForMergeabilityRefresh(state: PullRequestState): boolean {
+  return state.lifecycle_state === "OPEN"
+    && state.checks.observed
+    && state.checks.state === "success"
+    && (state.mergeability?.kind === "unknown" || state.mergeability?.kind === "blocked");
+}
+
+function withMergeabilityRefreshTimeoutBlocker(state: PullRequestState): PullRequestState {
+  if (!shouldWaitForMergeabilityRefresh(state)) return state;
+  return {
+    ...state,
+    blockers: [...(state.blockers ?? []), "GitHub mergeability did not refresh after latest-head checks passed before the polling timeout."],
+  };
+}
+
 async function waitForCiToSettle(
   identity: PullRequestIdentity,
   initial: PullRequestState,
@@ -428,7 +519,7 @@ async function waitForCiToSettle(
   const deadline = Date.now() + pollTimeoutSeconds * 1_000;
   let current = initial;
 
-  while (current.lifecycle_state === "OPEN" && current.checks.state === "pending") {
+  while (current.lifecycle_state === "OPEN" && (current.checks.state === "pending" || shouldWaitForMergeabilityRefresh(current))) {
     if ((await sleepUntilDeadline(deadline, pollIntervalSeconds)) === "expired" || Date.now() >= deadline) break;
     current = await fetchPrState(identity, cwd);
   }
@@ -439,7 +530,7 @@ async function waitForCiToSettle(
     return { ...current, ci_timed_out: true };
   }
 
-  return current;
+  return withMergeabilityRefreshTimeoutBlocker(current);
 }
 
 async function checkoutPrBranch(identity: PullRequestIdentity, cwd: string): Promise<void> {
@@ -539,7 +630,7 @@ async function syncAfterPush(
 
     if (current.head_sha === pushedCommitSha) {
       observedPushedCommit = true;
-      if (current.checks.observed && current.checks.state !== "pending") return current;
+      if (current.checks.observed && current.checks.state !== "pending" && !shouldWaitForMergeabilityRefresh(current)) return current;
     } else if (observedPushedCommit) {
       throw new Error(`sync_after_push observed the pushed commit ${pushedCommitSha}, but the PR head later moved to ${current.head_sha}.`);
     }
@@ -551,6 +642,8 @@ async function syncAfterPush(
   if (current.head_sha !== pushedCommitSha) {
     throw new Error(`sync_after_push timed out before GitHub reported pushed commit ${pushedCommitSha} as the PR head.`);
   }
+
+  if (current.checks.observed && current.checks.state !== "pending") return withMergeabilityRefreshTimeoutBlocker(current);
 
   return {
     ...current,
@@ -1074,7 +1167,8 @@ Read the artifacts:
 - PR state summary: ${displayPath(stateMarkdownPath)}
 - CI state: ${displayPath(ciJsonPath)}
 
-Address actionable review feedback, requested-change review threads, merge conflicts, and failing CI for the current OPEN PR state. Use senior-engineer judgment: research the codebase against each PR comment, apply changes that are relevant and important to resolve, and prefer small idiomatic fixes over superficial appeasement. This remediation stage is trusted and has shell access similar to running Claude Code with --dangerously-skip-permissions: you may run local commands, tests, typechecks, builds, package scripts, git, and gh using the credentials available in this checkout. You may edit files, resolve merge conflicts, create commits, push to the PR branch, update PR title/body or other PR metadata, and reply to or resolve review threads when that is the appropriate way to address the feedback. Do not merge or close the PR; avoid force-pushes unless the repository's normal workflow explicitly requires them and you can explain why. If feedback is ambiguous, unsafe, or unfixable, leave the repository in a clean state and explain why. End with a final marker line \`FINAL_REMEDIATION_RECEIPT:\` followed by a machine-checkable remediation receipt as raw JSON or a fenced json block with this schema: {"changed_files":[{"path":"src/foo.ts","change":"modify"}],"tests_run":[{"command":"bun test","result":"passed"}],"residual_items":[],"addressed_comment_signal_ids":["comment-... or review-..."]}. Rename/copy entries must use old_path and new_path. The optional addressed_comment_signal_ids array is only for top-level PR comment or review-summary comment_signal IDs from the PR state that you actually addressed in this pass; do not include inline review thread IDs, unknown IDs, non-actionable IDs, or previously addressed IDs. Omit addressed_comment_signal_ids or use [] when no top-level comment/review-summary signal was addressed.`,
+Address actionable review feedback, requested-change review threads, merge conflicts, and failing CI for the current OPEN PR state. Use senior-engineer judgment: research the codebase against each PR comment, apply changes that are relevant and important to resolve, and prefer small idiomatic fixes over superficial appeasement. This remediation stage is trusted and has shell access similar to running Claude Code with --dangerously-skip-permissions: you may run local commands, tests, typechecks, builds, package scripts, git, and gh using the credentials available in this checkout. You may edit files, resolve merge conflicts, create commits, push to the PR branch, update PR title/body or other PR metadata, and reply to or resolve review threads when that is the appropriate way to address the feedback. Do not merge or close the PR; avoid force-pushes unless the repository's normal workflow explicitly requires them and you can explain why. If feedback is ambiguous, unsafe, or unfixable, leave the repository in a clean state and explain why. End with a final marker line \`FINAL_REMEDIATION_RECEIPT:\` followed by a machine-checkable remediation receipt as raw JSON or a fenced json block with this schema: {"changed_files":[{"path":"src/foo.ts","change":"modify"}],"tests_run":[{"command":"bun test","result":"passed","note":"optional details only; result must be exact"}],"residual_items":[],"addressed_comment_signal_ids":["comment-... or review-..."]}. Each tests_run[].result must be exactly passed, failed, or skipped; put transient retries, focused rerun details, or other prose in note, not result. Do not list GitHub checks pending after your push as residual work because the parent workflow owns latest-head CI polling. Rename/copy entries must use old_path and new_path. The optional addressed_comment_signal_ids array is only for top-level PR comment or review-summary comment_signal IDs from the PR state that you actually addressed in this pass; do not include inline review thread IDs, unknown IDs, non-actionable IDs, or previously addressed IDs. Omit addressed_comment_signal_ids or use [] when no top-level comment/review-summary signal was addressed.`,
+          schema: REMEDIATION_RECEIPT_SCHEMA,
           output: remediationPath,
           outputMode: FILE_ONLY_OUTPUT,
           tools: ["read", "edit", "write", "bash"],
@@ -1120,9 +1214,10 @@ Address actionable review feedback, requested-change review threads, merge confl
         stages.push(`parse-remediation-receipt-${iteration}`);
         const receiptOutcome = validateRemediationReceiptOutcome(remediationReceipt);
         if (!receiptOutcome.ok) {
-          throw new Error(`validate_remediation_receipt_outcome rejected the remediation output: ${receiptOutcome.error}`);
+          stages.push(`record-remediation-receipt-outcome-${iteration}`);
+        } else {
+          stages.push(`validate-remediation-receipt-outcome-${iteration}`);
         }
-        stages.push(`validate-remediation-receipt-outcome-${iteration}`);
         const addressedValidation = validateReceiptAddressedCommentSignalIds(prState, remediationReceipt);
         if (!addressedValidation.ok) {
           throw new Error(`validate_receipt_addressed_comment_signal_ids rejected the remediation output: ${addressedValidation.error}`);
