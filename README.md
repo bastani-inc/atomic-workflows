@@ -81,15 +81,15 @@ For example, this configuration enables only `review-board` and `security-gate` 
 
 ```json
 {
-    "packages": [
-        {
-            "source": "git:github.com/lavaman131/atomic-workflows",
-            "workflows": [
-                "workflows/review-board/index.ts",
-                "workflows/security-gate/index.ts"
-            ]
-        }
-    ]
+  "packages": [
+    {
+      "source": "git:github.com/bastani-inc/atomic-workflows",
+      "workflows": [
+        "workflows/review-board/index.ts",
+        "workflows/security-gate/index.ts"
+      ]
+    }
+  ]
 }
 ```
 
@@ -98,6 +98,11 @@ Use workflow paths relative to the package root, such as `workflows/review-board
 ## Registry workflows
 
 These workflows are provided by this registry package after installation. See [`workflows/README.md`](./workflows/README.md) for the current workflow index, details, and settings filter examples.
+
+- `babysit-pr`: bounded PR shepherding through review feedback, inline threads, mergeability, and observed CI (empty checks are not green) with a structured preflight classifier before checkout, hard `poll_timeout` sleep caps, known-head, parseable receipts, trusted shell-capable remediation that can run tests/package scripts/git/gh only when routed, clean-workspace checks, and post-remediation PR-state syncing/reporting.
+- `review-board`: read-only multi-specialist review synthesis.
+- `security-gate`: read-only local security risk gate.
+- `descent`, `codebase-migration`, and `spec-driven-development`: implementation, migration, and spec workflow recipes.
 
 ## Customize these workflow recipes
 
