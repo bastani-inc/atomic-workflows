@@ -1,0 +1,304 @@
+{
+  "upstream": {
+    "repository": "https://github.com/bastani-inc/atomic.git",
+    "ref": "main",
+    "commit": "020310225e0901e6a5e1515968500b73542f52a8"
+  },
+  "adaptation_policy": "Only private Atomic SDK/type imports are rewritten to @bastani/workflows; all workflow logic remains byte-equivalent.",
+  "files": [
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal.ts",
+      "local_path": "workflows/goal/index.ts",
+      "upstream_sha256": "019d5940b870f3a956a7b28f35969809e398a8af0b9a72094f5e64d16040d233",
+      "rewrites": [
+        {
+          "upstream": "import { workflow } from \"../src/authoring/workflow.js\";",
+          "registry": "import { workflow } from \"@bastani/workflows\";"
+        }
+      ]
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-artifacts.ts",
+      "local_path": "workflows/goal/goal-artifacts.ts",
+      "upstream_sha256": "df38b5f15bdf12d2db40a6c534967dff7e12223f2570b82ad3a7121e91555569",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-ledger.ts",
+      "local_path": "workflows/goal/goal-ledger.ts",
+      "upstream_sha256": "6e621d2b8bae6e01765f2a9e6b51a28a846358e2937b6b2205e0b776954c054d",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-models.ts",
+      "local_path": "workflows/goal/goal-models.ts",
+      "upstream_sha256": "d1058b51e2f540044ba0036e5349702740cf68f342ea07c7f8e08abd93c0a5ba",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-orchestrator-prompts.ts",
+      "local_path": "workflows/goal/goal-orchestrator-prompts.ts",
+      "upstream_sha256": "492e86c091c4cf6c007138bf2b30272d287c83ee8fbe48a57d548b780c3def93",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-prompts.ts",
+      "local_path": "workflows/goal/goal-prompts.ts",
+      "upstream_sha256": "69569575d68adf920885e6e559271240cfb71d6c3590b9f4a91aa361baee846a",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-reducer.ts",
+      "local_path": "workflows/goal/goal-reducer.ts",
+      "upstream_sha256": "c3e546a2896b07c76007c728ce5e0824b19f422aa1ac9a033dcc83352bb20e6d",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-reports.ts",
+      "local_path": "workflows/goal/goal-reports.ts",
+      "upstream_sha256": "2b4bf830c196290471fd38316e87eb39e6e593ee1b231df8b89e89738c4cbe7a",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-review.ts",
+      "local_path": "workflows/goal/goal-review.ts",
+      "upstream_sha256": "30511974192f5ff67a6f9808914179ec944cc4621f011a14f0109faa116b28fa",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-runner.ts",
+      "local_path": "workflows/goal/goal-runner.ts",
+      "upstream_sha256": "9792a93ee479f92cc054630a801948e67c0f7d6407dbc4838f62d8f5d73ff9bf",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-schemas.ts",
+      "local_path": "workflows/goal/goal-schemas.ts",
+      "upstream_sha256": "ccb13ab0c58c5a821d0678c650f8632c8589d1b333db73555178ad93a359a06f",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/goal-types.ts",
+      "local_path": "workflows/goal/goal-types.ts",
+      "upstream_sha256": "53e01b60073a38ead3ab538867706d2ccd77c27da9f708784d7f02c834734909",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/review-convergence.ts",
+      "local_path": "workflows/goal/review-convergence.ts",
+      "upstream_sha256": "3657da39478d7b2e38d603e34a5e8634acbeda5b9d699ee6d216732cbc54f915",
+      "rewrites": []
+    },
+    {
+      "workflow": "goal",
+      "upstream_path": "packages/workflows/builtin/shared-prompts.ts",
+      "local_path": "workflows/goal/shared-prompts.ts",
+      "upstream_sha256": "30a445783eff792ef92612d500591abdc2f48a02add04ccc71a9236869a40d19",
+      "rewrites": []
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/ralph.ts",
+      "local_path": "workflows/ralph/index.ts",
+      "upstream_sha256": "05b532cfd2e7307c61f56ace7275d8041608d6de460d44629e1ccad2e33273c5",
+      "rewrites": [
+        {
+          "upstream": "import { workflow } from \"../src/authoring/workflow.js\";",
+          "registry": "import { workflow } from \"@bastani/workflows\";"
+        }
+      ]
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/ralph-core.ts",
+      "local_path": "workflows/ralph/ralph-core.ts",
+      "upstream_sha256": "b4a657f414aab83bd625bb049b2a2e4e33fae0f54703031bd594bbec79e34d39",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/ralph-forked-prompts.ts",
+      "local_path": "workflows/ralph/ralph-forked-prompts.ts",
+      "upstream_sha256": "988350cb6a9991bfaebaad96b1d0c19fe6de4dfecdc05e711c766975186a2661",
+      "rewrites": []
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/ralph-models.ts",
+      "local_path": "workflows/ralph/ralph-models.ts",
+      "upstream_sha256": "1266ca51a1af801aea989bf08ed386dc264103c006e280b6e0b7ec3c1d8f8d91",
+      "rewrites": []
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/ralph-review-gate.ts",
+      "local_path": "workflows/ralph/ralph-review-gate.ts",
+      "upstream_sha256": "9fe8b451ce19f4706d7e2c11a5ef0fb7a1aec2ec039927d3df27e66eaad432df",
+      "rewrites": []
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/ralph-reviewer-prompt.ts",
+      "local_path": "workflows/ralph/ralph-reviewer-prompt.ts",
+      "upstream_sha256": "243a96f16e9fd96fc30dc745e113c3ab51db7868787fd307f42bb068e6cac7a5",
+      "rewrites": []
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/ralph-runner.ts",
+      "local_path": "workflows/ralph/ralph-runner.ts",
+      "upstream_sha256": "a78c7aa12b42134c7e459797e1eece33c93023acf8a842b410dcac9d2cbaa1ad",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/review-convergence.ts",
+      "local_path": "workflows/ralph/review-convergence.ts",
+      "upstream_sha256": "3657da39478d7b2e38d603e34a5e8634acbeda5b9d699ee6d216732cbc54f915",
+      "rewrites": []
+    },
+    {
+      "workflow": "ralph",
+      "upstream_path": "packages/workflows/builtin/shared-prompts.ts",
+      "local_path": "workflows/ralph/shared-prompts.ts",
+      "upstream_sha256": "30a445783eff792ef92612d500591abdc2f48a02add04ccc71a9236869a40d19",
+      "rewrites": []
+    },
+    {
+      "workflow": "deep-research-codebase",
+      "upstream_path": "packages/workflows/builtin/deep-research-codebase.ts",
+      "local_path": "workflows/deep-research-codebase/index.ts",
+      "upstream_sha256": "3bf5cc6f7712ce1b1921b3721c8f33345895f8d1750c4d7353df0cffc24545b6",
+      "rewrites": [
+        {
+          "upstream": "import { workflow } from \"../src/authoring/workflow.js\";",
+          "registry": "import { workflow } from \"@bastani/workflows\";"
+        }
+      ]
+    },
+    {
+      "workflow": "deep-research-codebase",
+      "upstream_path": "packages/workflows/builtin/deep-research-codebase-runner.ts",
+      "local_path": "workflows/deep-research-codebase/deep-research-codebase-runner.ts",
+      "upstream_sha256": "02e2ddd3e31481208d731cd2108d65c9df65cb0bbfa021e39657651fe6f32c71",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "deep-research-codebase",
+      "upstream_path": "packages/workflows/builtin/deep-research-codebase-utils.ts",
+      "local_path": "workflows/deep-research-codebase/deep-research-codebase-utils.ts",
+      "upstream_sha256": "3e2817b43b64664e3fe52da7142fc41a6a807dc159bc728a4dc060ce00a17ac9",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "open-claude-design",
+      "upstream_path": "packages/workflows/builtin/open-claude-design.ts",
+      "local_path": "workflows/open-claude-design/index.ts",
+      "upstream_sha256": "af183edb9ad472c3fd354c7ed9ef8a380ae2c35989c389673f0d7f6791fe2272",
+      "rewrites": [
+        {
+          "upstream": "import { workflow } from \"../src/authoring/workflow.js\";",
+          "registry": "import { workflow } from \"@bastani/workflows\";"
+        }
+      ]
+    },
+    {
+      "workflow": "open-claude-design",
+      "upstream_path": "packages/workflows/builtin/open-claude-design-feedback.ts",
+      "local_path": "workflows/open-claude-design/open-claude-design-feedback.ts",
+      "upstream_sha256": "69c9cfb18888ea6565ba2e041956fb85a9e51e66c7afc5c8d1f6e82501355f6c",
+      "rewrites": []
+    },
+    {
+      "workflow": "open-claude-design",
+      "upstream_path": "packages/workflows/builtin/open-claude-design-phases.ts",
+      "local_path": "workflows/open-claude-design/open-claude-design-phases.ts",
+      "upstream_sha256": "dfeedd5c7bf805c62180815ac07f43f673a2c23bcfa06c6a7dcadccc28e7e755",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "open-claude-design",
+      "upstream_path": "packages/workflows/builtin/open-claude-design-runner.ts",
+      "local_path": "workflows/open-claude-design/open-claude-design-runner.ts",
+      "upstream_sha256": "ea3b3ac50f3d4aa5fb0479f5ce80c7b65a4573e33957686bac3db0006cc445af",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "open-claude-design",
+      "upstream_path": "packages/workflows/builtin/open-claude-design-setup.ts",
+      "local_path": "workflows/open-claude-design/open-claude-design-setup.ts",
+      "upstream_sha256": "4d6e47702c0efd1f00f3315c8af86f718be59b4b57fc59c3b474f03198617f90",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    },
+    {
+      "workflow": "open-claude-design",
+      "upstream_path": "packages/workflows/builtin/open-claude-design-utils.ts",
+      "local_path": "workflows/open-claude-design/open-claude-design-utils.ts",
+      "upstream_sha256": "75ac7647040d5392c1afe8fcbbd0aa40d93a5f37f68ee29e7382e8e24d013840",
+      "rewrites": [
+        {
+          "upstream": "\"../src/shared/types.js\"",
+          "registry": "\"@bastani/workflows\""
+        }
+      ]
+    }
+  ]
+}
