@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": [
+      "bun",
+      "@bastani/atomic/workflows/ambient"
+    ]
+  },
+  "include": [
+    "workflows/deep-research-codebase/**/*.ts",
+    "workflows/goal/**/*.ts",
+    "workflows/open-claude-design/**/*.ts",
+    "workflows/ralph/**/*.ts"
+  ]
+}
