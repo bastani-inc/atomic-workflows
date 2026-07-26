@@ -27,7 +27,7 @@
         ]
     },
     "peerDependencies": {
-        "@bastani/atomic": ">=0.9.10",
+        "@bastani/atomic": ">=0.9.0",
         "typebox": "*"
     },
     "peerDependenciesMeta": {
@@ -42,8 +42,6 @@
         "README.md",
         "LICENSE",
         "assets/atomic-promo.gif",
-        "tsconfig.json",
-        "workflows/upstream-builtins-manifest.json",
         "workflows/**/*.md",
         "workflows/**/*.ts",
         "!workflows/**/*.test.ts"
