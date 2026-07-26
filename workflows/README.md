@@ -8,11 +8,7 @@ Each workflow has its own subfolder with an `index.ts` entrypoint and local docu
 | --- | --- | --- |
 | `babysit-pr` | [`babysit-pr/index.ts`](./babysit-pr/index.ts) | [`babysit-pr/README.md`](./babysit-pr/README.md) |
 | `codebase-migration` | [`codebase-migration/index.ts`](./codebase-migration/index.ts) | [`codebase-migration/README.md`](./codebase-migration/README.md) |
-| `deep-research-codebase` | [`deep-research-codebase/index.ts`](./deep-research-codebase/index.ts) | [`deep-research-codebase/README.md`](./deep-research-codebase/README.md) |
 | `descent` | [`descent/index.ts`](./descent/index.ts) | [`descent/README.md`](./descent/README.md) |
-| `goal` | [`goal/index.ts`](./goal/index.ts) | [`goal/README.md`](./goal/README.md) |
-| `open-claude-design` | [`open-claude-design/index.ts`](./open-claude-design/index.ts) | [`open-claude-design/README.md`](./open-claude-design/README.md) |
-| `ralph` | [`ralph/index.ts`](./ralph/index.ts) | [`ralph/README.md`](./ralph/README.md) |
 | `review-board` | [`review-board/index.ts`](./review-board/index.ts) | [`review-board/README.md`](./review-board/README.md) |
 | `security-gate` | [`security-gate/index.ts`](./security-gate/index.ts) | [`security-gate/README.md`](./security-gate/README.md) |
 | `spec-driven-development` | [`spec-driven-development/index.ts`](./spec-driven-development/index.ts) | [`spec-driven-development/README.md`](./spec-driven-development/README.md) |
@@ -27,17 +23,11 @@ From an Atomic chat session:
 /workflow list
 /workflow inputs babysit-pr
 /workflow inputs codebase-migration
-/workflow inputs deep-research-codebase
 /workflow inputs descent
-/workflow inputs goal
-/workflow inputs open-claude-design
-/workflow inputs ralph
 /workflow inputs review-board
 /workflow inputs security-gate
 /workflow inputs spec-driven-development
 ```
-
-The `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` runtime sources are synced from [`bastani-inc/atomic`](https://github.com/bastani-inc/atomic) at pinned commit `020310225e0901e6a5e1515968500b73542f52a8`. Their runtime TypeScript differs only through manifest-recorded rewrites from private Atomic SDK/type imports to the public `@bastani/workflows` surface; the parity test checks every copied file.
 
 ## Final reports and artifacts
 
